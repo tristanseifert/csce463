@@ -54,6 +54,8 @@ public:
 private:
     void sendGet(const URL&);
 
+    static void* readUntilEnd(SOCKET, size_t *);
+
     static void send(SOCKET, const std::string&);
     static void send(SOCKET, const void*, size_t);
 
@@ -61,6 +63,13 @@ private:
     SOCKET sock = INVALID_SOCKET;
 
 private:
+    /// Read timeout (in ms)
+    static const unsigned int kRxTimeout = (5 * 1000);
+    /// Default receive buffer size, in bytes
+    static const size_t kInitialRxBufSize = (32 * 1024);
+    /// Number of bytes by which the receive buffer should grow
+    static const size_t kRxBufferSizeGrowth = (32 * 1024);
+    /// User agent string to present in all requests
     static inline const auto kUserAgent = "blazerino/1.1";
     static inline const auto kHeaderNewline = "\r\n";
 };
