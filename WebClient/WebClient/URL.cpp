@@ -1,3 +1,5 @@
+#define _WINSOCK_DEPRECATED_NO_WARNINGS
+
 #include "pch.h"
 #include "URL.h"
 
@@ -38,9 +40,16 @@ URL::URL(const std::string str)
 /**
  * @brief Deallocates all previously allocated resources for the URL.
 */
-URL::~URL()
-{
+URL::~URL() { }
 
+/**
+ * @brief Resolves the hostname of the URL and populates an address struct.
+ * @param outAddr Address struct to hold the address
+*/
+void URL::resolve(sockaddr_in* outAddr)
+{
+    URL::resolve(this->hostname, outAddr);
+    outAddr->sin_port = htons(this->port);
 }
 /**
  * @brief Parse the given URL string to fill in all of the parameters in the
@@ -103,4 +112,40 @@ void URL::parse(const std::string& in)
 
         this->port = kPortMap.at(lowerScheme);
     }
+}
+
+
+
+/**
+ * @brief Attempts to resolve the given hostname.
+ * @param host Hostname to look up (maybe string IP address)
+ * @param outAddr Address struct to hold the result
+*/
+void URL::resolve(const std::string host, sockaddr_in* outAddr)
+{
+    int err;
+
+    // common setup of the output address
+    outAddr->sin_family = AF_INET;
+
+    // try to parse as IP string
+    IN_ADDR resolved = { 0 };
+    err = inet_pton(AF_INET, host.c_str(), &resolved);
+
+    if (err == 1) {
+        outAddr->sin_addr = resolved;
+        return;
+    } else if (err == -1) {
+        throw std::runtime_error("inet_pton() failed: " + std::to_string(WSAGetLastError()));
+    }
+
+    // otherwise, we need to perform a DNS lookup
+    struct hostent *remote;
+
+    remote = gethostbyname(host.c_str());
+    if (remote == nullptr) {
+        throw std::runtime_error("Failed to resolve hostname");
+    }
+
+    memcpy((void *)&(outAddr->sin_addr), remote->h_addr, remote->h_length);
 }
