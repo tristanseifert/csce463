@@ -133,11 +133,15 @@ int main(int argc, const char** argv)
                   << " ms" << std::endl;
     }
 
-    // success!
+    // print the headers
+    std::cout << std::endl << "----------------------------------------" << std::endl;
+    std::cout << res.getResponseHeader() << std::endl;
     status = 0;
 
     // cleanup
 beach:;
+    res.release();
+
     WSACleanup();
     return status;
 }

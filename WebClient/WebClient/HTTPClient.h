@@ -3,6 +3,9 @@
 
 #include "URL.h"
 
+#include <unordered_map>
+#include <regex>
+
 /**
  * @brief A very basic HTTP client that can connect to a remote server, and
  *		  download data.
@@ -13,7 +16,7 @@ public:
         friend class HTTPClient;
 
         public:
-            Response() { }
+            Response() { this->payload = nullptr; }
             Response(const URL& url) : url(url) { }
             virtual ~Response();
 
@@ -30,6 +33,22 @@ public:
                 return this->status;
             }
 
+            bool hasHeader(const std::string name) const
+            {
+                return this->headers.find(name) != this->headers.end();
+            }
+            std::string getHeader(const std::string name) const
+            {
+                return this->headers.at(name);
+            }
+
+            std::string getResponseHeader() const
+            {
+                return this->responseHeader;
+            }
+
+            void release();
+
         private:
             /// URL from which content was fetched
             URL url;
@@ -40,6 +59,11 @@ public:
             void* payload = nullptr;
             /// HTTP status code
             int status = -1;
+
+            /// Raw string for the HTTP response (minus payload)
+            std::string responseHeader;
+            /// HTTP headers
+            std::unordered_map<std::string, std::string> headers;
     };
 
 public:
@@ -47,12 +71,14 @@ public:
     virtual ~HTTPClient();
 
     void connect(sockaddr_in& addr);
-    Response fetch(const URL& url);
-
-    
+    Response fetch(const URL& url);    
 
 private:
     void sendGet(const URL&);
+    void parseHeaders(Response&, const void*, const size_t);
+    void extractPayload(Response&, const void*, const size_t);
+
+    static size_t getPayloadIndex(const void*, const size_t);
 
     static void* readUntilEnd(SOCKET, size_t *);
 
@@ -72,6 +98,9 @@ private:
     /// User agent string to present in all requests
     static inline const auto kUserAgent = "blazerino/1.1";
     static inline const auto kHeaderNewline = "\r\n";
+
+    static const std::regex kStatusRegex;
+    static const std::regex kHeaderRegex;
 };
 
 #endif

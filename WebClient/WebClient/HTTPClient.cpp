@@ -6,6 +6,28 @@
 #include <string>
 #include <sstream>
 #include <stdexcept>
+#include <regex>
+
+/**
+ * @brief Parses the first line of the HTTP response to extract 1) the HTTP
+ *        version; 2) status code, and 3) status text.
+*/
+const std::regex HTTPClient::kStatusRegex = std::regex(R"blaze(^(?:HTTP\/)(\d+\.\d+)(?:\s+)(\d+)(?:\s+)([^\r\n]+))blaze");
+
+/**
+ * @brief Used to parse HTTP headers into key/value pairs.
+*/
+const std::regex HTTPClient::kHeaderRegex = std::regex(R"blaze(^([^:]+)(?:\:\s*)([^\r\n]+))blaze");
+
+/**
+ * @brief Trims whitespace from the start and end of the string
+ * @param s String to trim
+ * @return String sans whitespace
+*/
+static std::string trim(std::string s) {
+    std::regex e("^\\s+|\\s+$"); // remove leading and trailing spaces
+    return std::regex_replace(s, e, "");
+}
 
 /**
  * @brief Initializes a new HTTP client.
@@ -75,11 +97,156 @@ HTTPClient::Response HTTPClient::fetch(const URL& url)
     void* readBuf = readUntilEnd(this->sock, &readBufSz);
 
     // parse headers and extract payload
+    this->parseHeaders(resp, readBuf, readBufSz);
+    this->extractPayload(resp, readBuf, readBufSz);
+
     free(readBuf);
 
     // done!
     return resp;
 }
+
+/**
+ * @brief Sends a GET request for the given url.
+ * @param url URL to request; only the path and query string are sent.
+ * 
+ * This performs a HTTP 1.0 GET request.
+*/
+void HTTPClient::sendGet(const URL& url)
+{
+    std::stringstream request;
+
+    // write the path and host
+    request << "GET " << url.getPath();
+
+    if (!url.getQuery().empty()) {
+        request << "?" << url.getQuery();
+    }
+
+    request << " HTTP/1.0" << kHeaderNewline;
+
+    request << "Host: " << url.getHostname() << kHeaderNewline;
+
+    // remaining headers
+    request << "User-agent: " << kUserAgent << kHeaderNewline;
+    request << "Connection: close" << kHeaderNewline;
+    request << kHeaderNewline;
+
+    // send the header
+    auto str = request.str();
+    HTTPClient::send(this->sock, str);
+}
+
+/**
+ * @brief Parses the headers of the HTTP response, including the status code.
+ * @param response Object to populate with headers
+ * @param read Buffer of read data
+ * @param readSz Size of the read data buffer
+ * 
+ * @note This is technically _not_ conforming to the standards w.r.t. multiple
+ *       headers with the same value.
+*/
+void HTTPClient::parseHeaders(Response &response,  const void *read, const size_t readSz)
+{
+    using namespace std;
+
+    // get the header string only
+    const size_t payloadIndex = getPayloadIndex(read, readSz);
+
+    auto headerStr = string(reinterpret_cast<const char*>(read), payloadIndex);
+    response.responseHeader = trim(headerStr);
+
+    // parse the HTTP status line
+    auto statusEndIdx = headerStr.find(kHeaderNewline);
+    if (statusEndIdx == string::npos) {
+        throw runtime_error("no status line");
+    }
+    auto statusLine = string(headerStr.begin(), (headerStr.begin() + statusEndIdx));
+
+    auto statusMatch = smatch();
+    if (!regex_search(statusLine, statusMatch, kStatusRegex)) {
+        throw runtime_error("invalid status line");
+    }
+
+    if (statusMatch[1] != "1.0" && statusMatch[1] != "1.1") {
+        throw runtime_error("invalid HTTP version: '" + statusMatch[1].str() + "'");
+    }
+
+    unsigned long status = strtoul(statusMatch[2].str().c_str(), nullptr, 10);
+    if (status < 100 || status > 599) {
+        throw runtime_error("invalid HTTP status: " + statusMatch[2].str());
+    }
+
+    response.status = status;
+
+    // parse the headers
+    auto headersOnly = headerStr.substr(statusEndIdx + 2);
+
+    regex_token_iterator<string::iterator> headersEnd;
+    regex_token_iterator<string::iterator> headers(headersOnly.begin(), headersOnly.end(), kHeaderRegex, {1, 2});
+
+    while (headers != headersEnd) {
+        std::string name = *headers++;
+        std::string value = *headers++;
+
+        response.headers[name] = value;
+    }
+}
+
+/**
+ * @brief Extracts the payload of the HTTP response.
+ * @param response Object to populate with dat
+ * @param read Buffer of read data
+ * @param readSz Size of the read data buffer
+*/
+void HTTPClient::extractPayload(Response &response, const void *read, const size_t readSz)
+{
+    const size_t payloadIndex = getPayloadIndex(read, readSz);
+    const size_t payloadSize = readSz - payloadIndex;
+
+    if (payloadSize == 0 || payloadSize > readSz) {
+        throw std::runtime_error("no payload in request");
+    }
+
+    // allocate a payload buffer and copy it
+    void* buf = malloc(payloadSize);
+    if (!buf) {
+        throw std::runtime_error("malloc()");
+    }
+
+    memcpy(buf, (reinterpret_cast<const char *>(read) + payloadIndex), 
+           payloadSize);
+
+    response.payloadSize = payloadSize;
+    response.payload = buf;
+}
+
+/**
+ * @brief Finds the first byte of payload data.
+ * @param _in Buffer of read data
+ * @param readSz Size of the read data buffer
+ * @return Index of the first payload byte
+ * @throws If two consecutive newline sequences ("\r\n\r\n") aren't found
+*/
+size_t HTTPClient::getPayloadIndex(const void*_in, const size_t readSz)
+{
+    const char* in = static_cast<const char *>(_in);
+
+    for (size_t i = 0; i < (readSz - 3); i++) {
+        // read 4 bytes and check if two newlines are contained within
+        uint32_t temp = *(reinterpret_cast<const uint32_t*>(in + i));
+
+        if (temp == '\r\n\r\n') {
+            return i;
+        }
+    }
+
+    throw std::runtime_error("missing CRLF+CRLF");
+}
+
+
+
+
 
 /**
  * @brief Reads from the remote socket until the connection is closed, or a
@@ -125,9 +292,8 @@ void *HTTPClient::readUntilEnd(SOCKET sock, size_t *written)
             throw std::runtime_error("WSAWaitForMultipleEvents() " + errStr);
         }
         else if (err == WSA_WAIT_TIMEOUT) {
- //           goto closed;
             WSACloseEvent(event);
-            throw std::runtime_error("read timed out");
+            throw std::runtime_error("IO timed out");
         } 
         else if (err != WSA_WAIT_EVENT_0) {
             continue;
@@ -183,6 +349,7 @@ void *HTTPClient::readUntilEnd(SOCKET sock, size_t *written)
     // finished reading
 closed:;
 
+
     // zero terminate the buffer
     if ((bufSz - bufOff) > 0) {
         buf[bufOff] = '\0';
@@ -206,37 +373,6 @@ beach:;
     }
 
     return buf;
-}
-
-/**
- * @brief Sends a GET request for the given url.
- * @param url URL to request; only the path and query string are sent.
- * 
- * This performs a HTTP 1.0 GET request.
-*/
-void HTTPClient::sendGet(const URL& url)
-{
-    std::stringstream request;
-
-    // write the path and host
-    request << "GET " << url.getPath();
-
-    if (!url.getQuery().empty()) {
-        request << "?" << url.getQuery();
-    }
-
-    request << " HTTP/1.0" << kHeaderNewline;
-
-    request << "Host: " << url.getHostname() << kHeaderNewline;
-
-    // remaining headers
-    request << "User-agent: " << kUserAgent << kHeaderNewline;
-    request << "Connection: close" << kHeaderNewline;
-    request << kHeaderNewline;
-
-    // send the header
-    auto str = request.str();
-    HTTPClient::send(this->sock, str);
 }
 
 
@@ -276,6 +412,16 @@ void HTTPClient::send(SOCKET sock, const std::string& str)
 HTTPClient::Response::~Response()
 {
     // release payload if it was allocated
+    if (this->payload) {
+        this->payload = nullptr;
+    }
+}
+
+/**
+ * @brief Releases the payload of the response.
+*/
+void HTTPClient::Response::release()
+{
     if (this->payload) {
         free(this->payload);
         this->payload = nullptr;
