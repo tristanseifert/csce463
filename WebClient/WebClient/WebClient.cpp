@@ -6,6 +6,7 @@
 #include <chrono>
 
 #include "URL.h"
+#include "HTTPClient.h"
 
 // what kind of idiot decided this is how you link against libraries
 #pragma comment(lib, "ws2_32.lib")
@@ -32,8 +33,15 @@ static void CommonInit()
  */
 int main(int argc, const char** argv)
 {
+    using namespace std;
+
+    int status = -1;
+    
     URL url;
     struct sockaddr_in addr;
+
+    HTTPClient client;
+    HTTPClient::Response res;
 
     // perform initialization
     CommonInit();
@@ -41,7 +49,7 @@ int main(int argc, const char** argv)
     // parse the URL
     if (argc != 2) {
         std::cerr << "usage: " << argv[0] << " [url]" << std::endl;
-        return -1;
+        goto beach;
     }
 
     try {
@@ -53,25 +61,25 @@ int main(int argc, const char** argv)
             throw std::runtime_error("Invalid scheme");
         }
 
-        std::cout << "\tParsing URL... host " << url.getHostname() << ", port " 
+        std::cout << "\t  Parsing URL... host " << url.getHostname() << ", port " 
                   << url.getPort() << ", request " << url.getPath() 
                   << std::endl;
     } catch (std::exception &e) {
-        std::cerr << "\tParsing URL... failed: " << e.what() << std::endl;
-        return -1;
+        std::cerr << "\t  Parsing URL... failed: " << e.what() << std::endl;
+        goto beach;
     }
 
     // attempt to resolve the hostname
     try {
         auto start = std::chrono::steady_clock::now();
 
-        std::cout << "\tPerforming DNS lookup...";
+        std::cout << "\t  Performing DNS lookup..." << std::flush;
         url.resolve(&addr);
 
         // calculate total time taken and print result
-        auto end = std::chrono::steady_clock::now();
+        auto end = chrono::steady_clock::now();
         auto diff = end - start;
-        auto ms = std::chrono::duration<double, std::milli>(diff).count();
+        auto ms = chrono::duration<double, milli>(diff).count();
 
         char buffer[INET6_ADDRSTRLEN] = { 0 };
         const char* addrStr = inet_ntop(addr.sin_family, &addr.sin_addr, buffer, 
@@ -80,11 +88,56 @@ int main(int argc, const char** argv)
         std::cout << " done in " << ms << " ms, found " << addrStr << std::endl;
     } catch (std::exception& e) {
         std::cerr << " failed: " << e.what() << std::endl;
-        return -1;
+        goto beach;
     }
 
     // connect and retrieve the document
+    try {
+        // connect to the server
+        std::cout << "\t* Connecting to server... " << std::flush;
+        auto start = chrono::steady_clock::now();
+        client.connect(addr);
+        auto end = chrono::steady_clock::now();
+        std::cout << " done in " 
+                  << chrono::duration<double, milli>(end - start).count() 
+                  << " ms" << std::endl;
+
+        // fetch the page body
+        std::cout << "\t  Loading... " << std::flush;
+        start = chrono::steady_clock::now();
+        res = client.fetch(url);
+        end = chrono::steady_clock::now();
+        std::cout << " done in "
+                  << chrono::duration<double, milli>(end - start).count()
+                  << " ms with " << res.getPayloadSize() << " bytes" 
+                  << std::endl;
+
+        // verify header code
+        std::cout << "\t  Verifying header... status code " << res.getStatus() << std::endl;
+    } catch (std::exception& e) {
+        std::cerr << " failed: " << e.what() << std::endl;
+        goto beach;
+    }
+
+    // parse page contents if 2xx code
+    if (res.getStatus() >= 200 && res.getStatus() <= 299) {
+        std::cout << "\t+ Parsing page... " << std::flush;
+        auto start = chrono::steady_clock::now();
+
+        // parse the page conents
+
+        // print statistics
+        auto end = chrono::steady_clock::now();
+        std::cout << " done in "
+                  << chrono::duration<double, milli>(end - start).count()
+                  << " ms" << std::endl;
+    }
+
+    // success!
+    status = 0;
 
     // cleanup
+beach:;
     WSACleanup();
+    return status;
 }

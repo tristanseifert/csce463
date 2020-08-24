@@ -143,10 +143,12 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="HTTPClient.cpp" />
     <ClCompile Include="URL.cpp" />
     <ClCompile Include="WebClient.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="HTTPClient.h" />
     <ClInclude Include="pch.h" />
     <ClInclude Include="URL.h" />
   </ItemGroup>

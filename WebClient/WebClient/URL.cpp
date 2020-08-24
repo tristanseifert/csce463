@@ -3,6 +3,7 @@
 #include "pch.h"
 #include "URL.h"
 
+#include <iostream>
 #include <string>
 #include <regex>
 #include <stdexcept>
@@ -71,6 +72,10 @@ void URL::parse(const std::string& in)
     // extract fields that need no further processing
     this->scheme = result[2];
 
+    if (this->scheme.length() == 0) {
+        throw std::runtime_error("Invalid scheme");
+    }
+
     if (result[5].length()) {
         this->path = result[5];
     } else {
@@ -110,7 +115,11 @@ void URL::parse(const std::string& in)
                 return std::tolower(c); 
         });
 
-        this->port = kPortMap.at(lowerScheme);
+        try {
+            this->port = kPortMap.at(lowerScheme);
+        } catch (std::exception) {
+            throw std::runtime_error("Invalid scheme");
+        }
     }
 }
 
