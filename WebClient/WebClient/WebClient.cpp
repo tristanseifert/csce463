@@ -8,6 +8,8 @@
 #include "URL.h"
 #include "HTTPClient.h"
 
+using namespace webclient;
+
 // what kind of idiot decided this is how you link against libraries
 #pragma comment(lib, "ws2_32.lib")
 
@@ -125,12 +127,23 @@ int main(int argc, const char** argv)
         auto start = chrono::steady_clock::now();
 
         // parse the page conents
+        HTMLParserBase parser;
+
+        char* code = reinterpret_cast<char*>(res.getPayload());
+        const size_t codeLen = res.getPayloadSize();
+
+        auto base = res.getUrl().toString();
+        char* baseUrl = const_cast<char *>(base.c_str());
+        size_t baseUrlLen = base.size();
+
+        int nLinks;
+        char* linkBuffer = parser.Parse(code, codeLen, baseUrl, baseUrlLen, &nLinks);
 
         // print statistics
         auto end = chrono::steady_clock::now();
         std::cout << " done in "
                   << chrono::duration<double, milli>(end - start).count()
-                  << " ms" << std::endl;
+                  << " ms with " << nLinks << " links" << std::endl;
     }
 
     // print the headers

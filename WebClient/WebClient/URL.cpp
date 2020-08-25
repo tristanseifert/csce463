@@ -4,10 +4,13 @@
 #include "URL.h"
 
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <regex>
 #include <stdexcept>
 #include <algorithm>
+
+using namespace webclient;
 
 /**
  * @brief Regex used to parse URLs. This was taken from RFC 3986.
@@ -70,6 +73,12 @@ void URL::parse(const std::string& in)
     }
 
     // extract fields that need no further processing
+    std::string lowerScheme = result[2];
+    transform(lowerScheme.begin(), lowerScheme.end(), lowerScheme.begin(),
+        [](unsigned char c) {
+            return std::tolower(c);
+        });
+
     this->scheme = result[2];
 
     if (this->scheme.length() == 0) {
@@ -109,14 +118,8 @@ void URL::parse(const std::string& in)
 
     // if port wasn't set, try to get the default port for the scheme
     if (!this->port) {
-        std::string lowerScheme = this->scheme;
-        transform(lowerScheme.begin(), lowerScheme.end(), lowerScheme.begin(), 
-            [](unsigned char c) {
-                return std::tolower(c); 
-        });
-
         try {
-            this->port = kPortMap.at(lowerScheme);
+            this->port = kPortMap.at(this->scheme);
         } catch (std::exception) {
             throw std::runtime_error("Invalid scheme");
         }
@@ -124,6 +127,45 @@ void URL::parse(const std::string& in)
 }
 
 
+/**
+ * @brief Gets a string representation of the URL.
+ * @return Stringified URL
+*/
+std::string URL::toString() const
+{
+    std::stringstream out;
+
+    // first, the URL scheme
+    out << this->scheme;
+    out << "://";
+
+    // TODO: username/password
+
+    // then, hostname and port
+    out << this->hostname;
+
+    
+    try {
+        auto defaultPort = kPortMap.at(this->scheme);
+
+        if (defaultPort != this->port) {
+            // using nonstandard port
+            out << ":";
+            out << this->port;
+        }
+    } catch (std::exception) {
+        // we don't know this scheme so include the port always
+        out << ":";
+        out << this->port;
+    }
+
+    // lastly, the path
+    out << this->path;
+
+    // TODO: query, fragment
+
+    return out.str();
+}
 
 /**
  * @brief Attempts to resolve the given hostname.

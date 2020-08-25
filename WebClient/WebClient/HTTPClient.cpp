@@ -8,6 +8,8 @@
 #include <stdexcept>
 #include <regex>
 
+using namespace webclient;
+
 /**
  * @brief Parses the first line of the HTTP response to extract 1) the HTTP
  *        version; 2) status code, and 3) status text.
@@ -82,7 +84,7 @@ void HTTPClient::connect(sockaddr_in& addr)
 */
 HTTPClient::Response HTTPClient::fetch(const URL& url)
 {
-    Response resp;
+    Response resp(url);
 
     // make sure socket is connected & valid
     if (this->sock == INVALID_SOCKET) {

@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <regex>
 
+namespace webclient {
 /**
  * @brief A very basic HTTP client that can connect to a remote server, and
  *		  download data.
@@ -16,8 +17,8 @@ public:
         friend class HTTPClient;
 
         public:
-            Response() { this->payload = nullptr; }
-            Response(const URL& url) : url(url) { }
+            inline Response() { this->payload = nullptr; }
+            inline Response(const URL& url) : url(url) { }
             virtual ~Response();
 
             size_t getPayloadSize() const
@@ -45,6 +46,11 @@ public:
             std::string getResponseHeader() const
             {
                 return this->responseHeader;
+            }
+
+            URL getUrl() const
+            {
+                return this->url;
             }
 
             void release();
@@ -102,5 +108,7 @@ private:
     static const std::regex kStatusRegex;
     static const std::regex kHeaderRegex;
 };
+
+}
 
 #endif

@@ -5,6 +5,7 @@
 #include <regex>
 #include <unordered_map>
 
+namespace webclient {
 /**
  * An URL
  * 
@@ -12,80 +13,86 @@
  *		  Some helpers are provided for making working with URLs easier.
 */
 class URL {
-	public:
-		URL() {};
-        URL(const std::string str);
-        URL(const char* str) : URL(std::string(str)) { }
+public:
+    inline URL() {};
+    inline URL(const char* str)
+        : URL(std::string(str))
+    {
+    }
+    URL(const std::string str);
 
-		virtual ~URL();
+    virtual ~URL();
 
-	public:
-        std::string getScheme() const
-        {
-            return this->scheme;
-        }
-		std::string getUsername() const
-		{
-            return this->username;
-		}
-		std::string getPassword() const
-		{
-            return this->password;
-		}
-		unsigned int getPort() const
-		{
-            return this->port;
-		}
-		std::string getHostname() const
-		{
-            return this->hostname;
-		}
-		std::string getPath() const
-		{
-            return this->path;
-		}
-		std::string getQuery() const
-		{
-            return this->query;
-		}
-		std::string getFragment() const
-		{
-            return this->fragment;
-		}
+public:
+    std::string getScheme() const
+    {
+        return this->scheme;
+    }
+    std::string getUsername() const
+    {
+        return this->username;
+    }
+    std::string getPassword() const
+    {
+        return this->password;
+    }
+    unsigned int getPort() const
+    {
+        return this->port;
+    }
+    std::string getHostname() const
+    {
+        return this->hostname;
+    }
+    std::string getPath() const
+    {
+        return this->path;
+    }
+    std::string getQuery() const
+    {
+        return this->query;
+    }
+    std::string getFragment() const
+    {
+        return this->fragment;
+    }
 
-		static void resolve(const std::string host, struct sockaddr_in* outAddr);
+    std::string toString() const;
 
-		/// Resolve the hostname of the URL
-        void resolve(struct sockaddr_in* outAddr);
+    static void resolve(const std::string host, struct sockaddr_in* outAddr);
 
-	private:
-            void parse(const std::string& in);
+    /// Resolve the hostname of the URL
+    void resolve(struct sockaddr_in* outAddr);
 
-	private:
-		/// Scheme
-        std::string scheme;
+private:
+    void parse(const std::string& in);
 
-		/// Username (if specified)
-        std::string username;
-		/// Password (if specified)
-        std::string password;
+private:
+    /// Scheme
+    std::string scheme;
 
-		/// Port number
-        unsigned int port = 0;
-		/// Hostname
-        std::string hostname;
+    /// Username (if specified)
+    std::string username;
+    /// Password (if specified)
+    std::string password;
 
-		/// Path of the resource to access
-        std::string path = "/";
-		/// Query string
-        std::string query;
-		/// URL fragment
-        std::string fragment;
+    /// Port number
+    unsigned int port = 0;
+    /// Hostname
+    std::string hostname;
 
-	private:
-        static const std::regex kUrlRegex;
-        static const std::regex kHostRegex;
-        static const std::unordered_map<std::string, unsigned int> kPortMap;
+    /// Path of the resource to access
+    std::string path = "/";
+    /// Query string
+    std::string query;
+    /// URL fragment
+    std::string fragment;
+
+private:
+    static const std::regex kUrlRegex;
+    static const std::regex kHostRegex;
+    static const std::unordered_map<std::string, unsigned int> kPortMap;
 };
+}
 
 #endif
