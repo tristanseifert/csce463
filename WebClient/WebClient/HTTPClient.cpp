@@ -86,6 +86,11 @@ HTTPClient::Response HTTPClient::fetch(const URL& url)
 {
     Response resp(url);
 
+    // validate scheme
+    if (url.getScheme() != "http") {
+        throw std::invalid_argument("invalid scheme '" + url.getScheme() + "'");
+    }
+
     // make sure socket is connected & valid
     if (this->sock == INVALID_SOCKET) {
         throw std::runtime_error("invalid socket");

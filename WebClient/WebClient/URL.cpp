@@ -1,5 +1,3 @@
-#define _WINSOCK_DEPRECATED_NO_WARNINGS
-
 #include "pch.h"
 #include "URL.h"
 
@@ -187,16 +185,33 @@ void URL::resolve(const std::string host, sockaddr_in* outAddr)
         outAddr->sin_addr = resolved;
         return;
     } else if (err == -1) {
-        throw std::runtime_error("inet_pton() failed: " + std::to_string(WSAGetLastError()));
+        throw std::runtime_error("inet_pton(): " + std::to_string(WSAGetLastError()));
     }
+
+    // hints for lookup
+    struct addrinfo hints = { 0 };
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
 
     // otherwise, we need to perform a DNS lookup
-    struct hostent *remote;
+    struct addrinfo* result = nullptr;
+    struct addrinfo* ptr = nullptr;
 
-    remote = gethostbyname(host.c_str());
-    if (remote == nullptr) {
-        throw std::runtime_error("Failed to resolve hostname");
+    err = getaddrinfo(host.c_str(), nullptr, &hints, &result);
+    if (err != 0) {
+        throw std::runtime_error("getaddrinfo(): " + std::to_string(err));
     }
 
-    memcpy((void *)&(outAddr->sin_addr), remote->h_addr, remote->h_length);
+    // find the first address that's IPv4
+    for (ptr = result; ptr != NULL; ptr = ptr->ai_next) {
+        if (ptr->ai_family == AF_INET) {
+            memcpy((void*)&(outAddr->sin_addr), ptr->ai_addr, ptr->ai_addrlen);
+            goto beach;
+        }
+    }
+
+    // cleanup
+beach:;
+    freeaddrinfo(result);
 }
