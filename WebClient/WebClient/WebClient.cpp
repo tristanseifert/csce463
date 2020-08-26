@@ -40,7 +40,7 @@ int main(int argc, const char** argv)
     int status = -1;
     
     URL url;
-    struct sockaddr_in addr;
+    struct sockaddr_storage addr = {0};
 
     HTTPClient client;
     HTTPClient::Response res;
@@ -84,8 +84,13 @@ int main(int argc, const char** argv)
         auto ms = chrono::duration<double, milli>(diff).count();
 
         char buffer[INET6_ADDRSTRLEN] = { 0 };
-        const char* addrStr = inet_ntop(addr.sin_family, &addr.sin_addr, buffer, 
-            INET6_ADDRSTRLEN);
+        PCSTR addrStr = nullptr;
+
+        if (addr.ss_family == AF_INET) {
+            auto addrV4 = reinterpret_cast<sockaddr_in*>(&addr);
+            addrStr = inet_ntop(addrV4->sin_family, &addrV4->sin_addr, buffer,
+                INET6_ADDRSTRLEN);
+        }
 
         std::cout << " done in " << ms << " ms, found " << addrStr << std::endl;
     } catch (std::exception& e) {
@@ -98,7 +103,7 @@ int main(int argc, const char** argv)
         // connect to the server
         std::cout << "\t* Connecting to server... " << std::flush;
         auto start = chrono::steady_clock::now();
-        client.connect(addr);
+        client.connect((sockaddr &) addr);
         auto end = chrono::steady_clock::now();
         std::cout << " done in " 
                   << chrono::duration<double, milli>(end - start).count() 

@@ -58,7 +58,7 @@ HTTPClient::~HTTPClient()
  * @brief Connects to the remote server.
  * @param addr Address to connect to
 */
-void HTTPClient::connect(sockaddr_in& addr)
+void HTTPClient::connect(sockaddr& addr)
 {
     int err;
 
@@ -70,7 +70,7 @@ void HTTPClient::connect(sockaddr_in& addr)
     }
 
     // attempt to connect
-    err = ::connect(this->sock, (struct sockaddr*) &addr, sizeof(struct sockaddr_in));
+    err = ::connect(this->sock, &addr, sizeof(struct sockaddr_in));
     if (err == SOCKET_ERROR) {
         auto errStr = std::to_string(WSAGetLastError());
         throw std::runtime_error("connect() " + errStr);
@@ -102,6 +102,10 @@ HTTPClient::Response HTTPClient::fetch(const URL& url)
     // read data until the entire request is read in
     size_t readBufSz = 0;
     void* readBuf = readUntilEnd(this->sock, &readBufSz);
+
+    if (readBufSz == 0) {
+        throw std::runtime_error("no content");
+    }
 
     // parse headers and extract payload
     this->parseHeaders(resp, readBuf, readBufSz);
@@ -285,6 +289,8 @@ void *HTTPClient::readUntilEnd(SOCKET sock, size_t *written)
 
     err = WSAEventSelect(sock, event, FD_READ | FD_CLOSE);
     if (err == SOCKET_ERROR) {
+        WSACloseEvent(event);
+
         auto errStr = std::to_string(WSAGetLastError());
         throw std::runtime_error("WSAEventSelect() " + errStr);
     }
@@ -300,62 +306,59 @@ void *HTTPClient::readUntilEnd(SOCKET sock, size_t *written)
         }
         else if (err == WSA_WAIT_TIMEOUT) {
             WSACloseEvent(event);
-            throw std::runtime_error("IO timed out");
+            throw std::runtime_error("IO timeout");
         } 
-        else if (err != WSA_WAIT_EVENT_0) {
-            continue;
-        }
 
         // determine the nature of event
         err = WSAEnumNetworkEvents(sock, event, &events);
         if (err == SOCKET_ERROR) {
+            WSACloseEvent(event);
+
             auto errStr = std::to_string(WSAGetLastError());
             throw std::runtime_error("WSAEnumNetworkEvents() " + errStr);
         }
 
-        // did the socket close?
+        // is there data to read on the socket?
+        if (events.lNetworkEvents & FD_READ) {
+            // resize the buffer if needed
+            size_t toRead = bufSz - bufOff;
+
+            if (toRead == 0) {
+                bufSz += kRxBufferSizeGrowth;
+
+                char* newBuf = static_cast<char*>(realloc(buf, bufSz));
+                if (!newBuf) {
+                    free(buf);
+                    throw std::runtime_error("realloc()");
+                }
+
+                buf = newBuf;
+                toRead = bufSz - bufOff;
+            }
+
+            // read however many bytes were left
+            err = recv(sock, (buf + bufOff), toRead, 0);
+
+            if (err == SOCKET_ERROR) {
+                auto errStr = std::to_string(WSAGetLastError());
+                throw std::runtime_error("recv() " + errStr);
+            } else if (err == 0) {
+                // connection was closed
+                std::cout << "Connection closed" << std::endl;
+                goto closed;
+            }
+
+            // increment the write pointeri
+            bufOff += err;
+        }
+        // was the socket closed?
         if (events.lNetworkEvents & FD_CLOSE) {
             goto closed;
         }
-        else if (!(events.lNetworkEvents & FD_READ)) {
-            continue;
-        }
-
-        // resize the buffer if needed
-        size_t toRead = bufSz - bufOff;
-
-        if (toRead == 0) {
-            bufSz += kRxBufferSizeGrowth;
-
-            char* newBuf = static_cast<char *>(realloc(buf, bufSz));
-            if (!newBuf) {
-                free(buf);
-                throw std::runtime_error("realloc()");
-            }
-
-            buf = newBuf;
-            toRead = bufSz - bufOff;
-        }
-
-        // read however many bytes were left
-        err = recv(sock, (buf + bufOff), toRead, 0);
-
-        if (err == SOCKET_ERROR) {
-            auto errStr = std::to_string(WSAGetLastError());
-            throw std::runtime_error("recv() " + errStr);
-        } else if (err == 0) {
-            // connection was closed
-            std::cout << "Connection closed" << std::endl;
-            goto closed;
-        }
-
-        // increment the write pointeri
-        bufOff += err;
     }
 
     // finished reading
 closed:;
-
 
     // zero terminate the buffer
     if ((bufSz - bufOff) > 0) {
@@ -372,7 +375,6 @@ closed:;
     }
 
     // clean-up
-beach:;
     WSACloseEvent(event);
 
     if (written) {

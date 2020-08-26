@@ -48,10 +48,15 @@ URL::~URL() { }
  * @brief Resolves the hostname of the URL and populates an address struct.
  * @param outAddr Address struct to hold the address
 */
-void URL::resolve(sockaddr_in* outAddr)
+void URL::resolve(sockaddr_storage* outAddr)
 {
     URL::resolve(this->hostname, outAddr);
-    outAddr->sin_port = htons(this->port);
+
+    // copy port number as well
+    if (outAddr->ss_family == AF_INET) {
+        sockaddr_in* addr = reinterpret_cast<sockaddr_in*>(outAddr);
+        addr->sin_port = htons(this->port);
+    }
 }
 /**
  * @brief Parse the given URL string to fill in all of the parameters in the
@@ -170,19 +175,20 @@ std::string URL::toString() const
  * @param host Hostname to look up (maybe string IP address)
  * @param outAddr Address struct to hold the result
 */
-void URL::resolve(const std::string host, sockaddr_in* outAddr)
+void URL::resolve(const std::string host, sockaddr_storage* outAddr)
 {
     int err;
 
     // common setup of the output address
-    outAddr->sin_family = AF_INET;
+    sockaddr_in* addrV4 = reinterpret_cast<sockaddr_in*>(outAddr);
+    outAddr->ss_family = AF_INET;
 
     // try to parse as IP string
     IN_ADDR resolved = { 0 };
     err = inet_pton(AF_INET, host.c_str(), &resolved);
 
     if (err == 1) {
-        outAddr->sin_addr = resolved;
+        addrV4->sin_addr = resolved;
         return;
     } else if (err == -1) {
         throw std::runtime_error("inet_pton(): " + std::to_string(WSAGetLastError()));
@@ -192,7 +198,7 @@ void URL::resolve(const std::string host, sockaddr_in* outAddr)
     struct addrinfo hints = { 0 };
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
-    hints.ai_protocol = IPPROTO_TCP;
+    hints.ai_flags |= AI_CANONNAME;
 
     // otherwise, we need to perform a DNS lookup
     struct addrinfo* result = nullptr;
@@ -204,12 +210,17 @@ void URL::resolve(const std::string host, sockaddr_in* outAddr)
     }
 
     // find the first address that's IPv4
-    for (ptr = result; ptr != NULL; ptr = ptr->ai_next) {
+    for (ptr = result; ptr != nullptr; ptr = ptr->ai_next) {
+        char name[64] = { 0 };
+
         if (ptr->ai_family == AF_INET) {
-            memcpy((void*)&(outAddr->sin_addr), ptr->ai_addr, ptr->ai_addrlen);
-            goto beach;
+           memcpy(outAddr, ptr->ai_addr, ptr->ai_addrlen);
+           goto beach;
         }
     }
+
+    // no suitable addresses
+    throw std::runtime_error("failed to resolve");
 
     // cleanup
 beach:;

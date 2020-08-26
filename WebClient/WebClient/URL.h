@@ -59,10 +59,10 @@ public:
 
     std::string toString() const;
 
-    static void resolve(const std::string host, struct sockaddr_in* outAddr);
+    static void resolve(const std::string host, struct sockaddr_storage* outAddr);
 
     /// Resolve the hostname of the URL
-    void resolve(struct sockaddr_in* outAddr);
+    void resolve(struct sockaddr_storage* outAddr);
 
 private:
     void parse(const std::string& in);

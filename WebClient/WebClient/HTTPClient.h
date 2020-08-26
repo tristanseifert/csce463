@@ -76,7 +76,7 @@ public:
     HTTPClient();
     virtual ~HTTPClient();
 
-    void connect(sockaddr_in& addr);
+    void connect(sockaddr& addr);
     Response fetch(const URL& url);    
 
 private:
