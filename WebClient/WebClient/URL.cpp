@@ -85,7 +85,7 @@ void URL::parse(const std::string& in)
     this->scheme = result[2];
 
     if (this->scheme.length() == 0) {
-        throw std::runtime_error("Invalid scheme");
+        throw std::invalid_argument("Invalid scheme");
     }
 
     if (result[5].length()) {
@@ -111,7 +111,7 @@ void URL::parse(const std::string& in)
 
         unsigned long port = strtoul(hostMatch[2].str().c_str(), nullptr, 10);
         if (port == 0 || port > UINT16_MAX) {
-            throw std::runtime_error("Invalid port number");
+            throw std::invalid_argument("Invalid port number");
         }
         this->port = port;
     } else {
@@ -119,12 +119,17 @@ void URL::parse(const std::string& in)
         this->hostname = hostStr;
     }
 
+    // check whether there's a missing port number in the hostname
+    if (this->hostname.back() == ':') {
+        throw std::invalid_argument("Invalid port number specification");
+    }
+
     // if port wasn't set, try to get the default port for the scheme
     if (!this->port) {
         try {
             this->port = kPortMap.at(this->scheme);
         } catch (std::exception) {
-            throw std::runtime_error("Invalid scheme");
+            throw std::invalid_argument("Invalid scheme");
         }
     }
 }
