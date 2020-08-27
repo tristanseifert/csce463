@@ -1,3 +1,8 @@
+/*
+ * CSCE 463-500 Homework 1, part 1
+ * 
+ * @author Tristan Seifert
+ */
 #include "pch.h"
 #include "URL.h"
 

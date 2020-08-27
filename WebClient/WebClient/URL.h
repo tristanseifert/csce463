@@ -1,3 +1,10 @@
+/*
+ * CSCE 463-500 Homework 1, part 1
+ * 
+ * URL parsing and DNS resolution helpers
+ * 
+ * @author Tristan Seifert
+ */
 #ifndef URL_H
 #define URL_H
 

@@ -1,3 +1,10 @@
+/*
+ * CSCE 463-500 Homework 1, part 1
+ * 
+ * Rudimentary HTTP client with a very janky API
+ * 
+ * @author Tristan Seifert
+ */
 #ifndef HTTP_H
 #define HTTP_H
 
@@ -53,6 +60,11 @@ public:
                 return this->url;
             }
 
+            size_t getTotalReceived() const
+            {
+                return this->totalReceived;
+            }
+
             void release();
 
         private:
@@ -65,6 +77,9 @@ public:
             void* payload = nullptr;
             /// HTTP status code
             int status = -1;
+
+            /// Total bytes received
+           size_t totalReceived = 0;
 
             /// Raw string for the HTTP response (minus payload)
             std::string responseHeader;

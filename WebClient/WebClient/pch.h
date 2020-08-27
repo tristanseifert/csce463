@@ -1,5 +1,9 @@
 /**
- * Precompiled header file; this contains all the includes
+ * CSCE 463-500 Homework 1, part 1
+ * 
+  Precompiled header file; this contains all the includes
+ * 
+ * @author Tristan Seifert
  */
 #pragma once
 

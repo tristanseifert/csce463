@@ -1,5 +1,10 @@
-// WebClient.cpp : This file contains the 'main' function. Program execution begins and ends there.
-//
+/*
+ * CSCE 463-500 Homework 1, part 1
+ * 
+ * Main function of the homework assignment and init functions for WinSock.
+ * 
+ * @author Tristan Seifert
+ */
 #include "pch.h"
 
 #include <iostream>
@@ -116,7 +121,7 @@ int main(int argc, const char** argv)
         end = chrono::steady_clock::now();
         std::cout << " done in "
                   << chrono::duration<double, milli>(end - start).count()
-                  << " ms with " << res.getPayloadSize() << " bytes" 
+                  << " ms with " << res.getTotalReceived() << " bytes" 
                   << std::endl;
 
         // verify header code
@@ -135,7 +140,7 @@ int main(int argc, const char** argv)
         HTMLParserBase parser;
 
         char* code = reinterpret_cast<char*>(res.getPayload());
-        const size_t codeLen = res.getPayloadSize();
+        const size_t codeLen = res.getPayloadSize() + 1;
 
         auto base = res.getUrl().toString();
         char* baseUrl = const_cast<char *>(base.c_str());

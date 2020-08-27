@@ -1,3 +1,8 @@
+/*
+ * CSCE 463-500 Homework 1, part 1
+ * 
+ * @author Tristan Seifert
+ */
 #include "pch.h"
 #include "URL.h"
 #include "HTTPClient.h"
@@ -106,6 +111,8 @@ HTTPClient::Response HTTPClient::fetch(const URL& url)
     if (readBufSz == 0) {
         throw std::runtime_error("no content");
     }
+
+    resp.totalReceived = readBufSz;
 
     // parse headers and extract payload
     this->parseHeaders(resp, readBuf, readBufSz);
@@ -275,6 +282,8 @@ void *HTTPClient::readUntilEnd(SOCKET sock, size_t *written)
     // allocate the initial read buffer
     size_t bufOff = 0;
     size_t bufSz = kInitialRxBufSize;
+    size_t bufSzIncr = kRxBufferSizeGrowth;
+
     char* buf = static_cast<char *>(malloc(bufSz));
     if (!buf) {
         throw std::runtime_error("malloc()");
@@ -324,7 +333,9 @@ void *HTTPClient::readUntilEnd(SOCKET sock, size_t *written)
             size_t toRead = bufSz - bufOff;
 
             if (toRead == 0) {
-                bufSz += kRxBufferSizeGrowth;
+                // the buffer grows by more each time we resize it
+                bufSz += bufSzIncr;
+                bufSzIncr = min((size_t) ((double) bufSzIncr * 1.5),  (1024 * 1024 * 2));
 
                 char* newBuf = static_cast<char*>(realloc(buf, bufSz));
                 if (!newBuf) {
@@ -344,7 +355,6 @@ void *HTTPClient::readUntilEnd(SOCKET sock, size_t *written)
                 throw std::runtime_error("recv() " + errStr);
             } else if (err == 0) {
                 // connection was closed
-                std::cout << "Connection closed" << std::endl;
                 goto closed;
             }
 
