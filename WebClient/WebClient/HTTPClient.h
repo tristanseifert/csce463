@@ -110,6 +110,24 @@ public:
     Response fetch(const URL& url, const Method meth = GET, const size_t maxLen = 0, const size_t timeout = 10000);    
 
 private:
+    /// Descriptions of why a read ended
+    enum ReadCompletionReason {
+        /// It is not known why the read completed. This is the default value.
+        UNKNOWN,
+        /// All data was successfully read.
+        SUCCESS,
+        /// The connection was closed by the remote host.
+        CLOSED,
+        /// Connecting (or downloading) data exceeded the timeout
+        TIMEOUT,
+        /// More data was received than desired
+        TOOBIG,
+        /// An IO operation returned an error
+        IOERROR,
+        /// Some other sort of error occurred
+        FAILED,
+    };
+
     void sendGet(const URL& url)
     {
         this->sendHttpRequest(url, GET);
@@ -126,7 +144,7 @@ private:
 
     static size_t getPayloadIndex(const void*, const size_t);
 
-    static void* readUntilEnd(SOCKET, size_t *, size_t, size_t);
+    static void* readUntilEnd(SOCKET, size_t*, size_t, size_t, ReadCompletionReason* = nullptr);
 
     static void send(SOCKET, const std::string&);
     static void send(SOCKET, const void*, size_t);

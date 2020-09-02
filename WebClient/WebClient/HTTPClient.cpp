@@ -94,6 +94,7 @@ void HTTPClient::connect(sockaddr *addr)
 HTTPClient::Response HTTPClient::fetch(const URL& url, const Method meth, const size_t maxLen, const size_t timeout)
 {
     Response resp(url);
+    ReadCompletionReason reason = UNKNOWN;
 
     // validate scheme
     if (url.getScheme() != "http") {
@@ -118,7 +119,13 @@ HTTPClient::Response HTTPClient::fetch(const URL& url, const Method meth, const 
 
     // read data until the entire request is read in
     size_t readBufSz = 0;
-    void* readBuf = readUntilEnd(this->sock, &readBufSz, maxLen, timeout);
+    void* readBuf = readUntilEnd(this->sock, &readBufSz, maxLen, timeout, &reason);
+    
+    if (reason == TOOBIG) {
+        throw std::runtime_error("Response too large");
+    } else if (reason == TIMEOUT) {
+        throw std::runtime_error("Timeout exceeded");
+    }
 
     if (readBufSz == 0) {
         throw std::runtime_error("no content");
@@ -303,7 +310,7 @@ size_t HTTPClient::getPayloadIndex(const void*_in, const size_t readSz)
  * @return Buffer containing the response, or NULL. Caller is responsible for
  *         calling free() on the buffer.
 */
-void *HTTPClient::readUntilEnd(SOCKET sock, size_t *written, size_t maxLen, size_t timeout)
+void* HTTPClient::readUntilEnd(SOCKET sock, size_t* written, size_t maxLen, size_t timeout, ReadCompletionReason *reason)
 {
     using namespace std;
 
@@ -340,19 +347,23 @@ void *HTTPClient::readUntilEnd(SOCKET sock, size_t *written, size_t maxLen, size
 
     char* buf = static_cast<char *>(malloc(bufSz));
     if (!buf) {
+        if (reason) *reason = FAILED;
         throw std::runtime_error("malloc()");
     }
 
     // set up for events
     WSAEVENT event = WSACreateEvent();
     if (event == WSA_INVALID_EVENT) {
+        if (reason) *reason = FAILED;
         auto errStr = std::to_string(WSAGetLastError());
         throw std::runtime_error("WSACreateEvent() " + errStr);
     }
 
     err = WSAEventSelect(sock, event, FD_READ | FD_CLOSE);
     if (err == SOCKET_ERROR) {
+        if (reason) *reason = FAILED;
         WSACloseEvent(event);
+        event = WSA_INVALID_EVENT;
 
         auto errStr = std::to_string(WSAGetLastError());
         throw std::runtime_error("WSAEventSelect() " + errStr);
@@ -364,18 +375,24 @@ void *HTTPClient::readUntilEnd(SOCKET sock, size_t *written, size_t maxLen, size
         err = WSAWaitForMultipleEvents(1, &event, true, remainingTimeout(), false);
 
         if (err == WSA_WAIT_FAILED) {
+            if (reason) *reason = FAILED;
             auto errStr = std::to_string(WSAGetLastError());
             throw std::runtime_error("WSAWaitForMultipleEvents() " + errStr);
         }
         else if (err == WSA_WAIT_TIMEOUT) {
+            if (reason) *reason = TIMEOUT;
             WSACloseEvent(event);
+            event = WSA_INVALID_EVENT;
+
             goto timeout;
         } 
 
         // determine the nature of event
         err = WSAEnumNetworkEvents(sock, event, &events);
         if (err == SOCKET_ERROR) {
+            if (reason) *reason = IOERROR;
             WSACloseEvent(event);
+            event = WSA_INVALID_EVENT;
 
             auto errStr = std::to_string(WSAGetLastError());
             throw std::runtime_error("WSAEnumNetworkEvents() " + errStr);
@@ -398,11 +415,13 @@ void *HTTPClient::readUntilEnd(SOCKET sock, size_t *written, size_t maxLen, size
 
                 // abort if we're going to read more than allowed
                 if (bufSz > maxLen) {
+                    if (reason) *reason = TOOBIG;
                     goto closed;
                 }
 
                 char* newBuf = static_cast<char*>(realloc(buf, bufSz));
                 if (!newBuf) {
+                    if (reason) *reason = FAILED;
                     free(buf);
                     throw std::runtime_error("realloc()");
                 }
@@ -415,23 +434,28 @@ void *HTTPClient::readUntilEnd(SOCKET sock, size_t *written, size_t maxLen, size
             err = recv(sock, (buf + bufOff), toRead, 0);
 
             if (err == SOCKET_ERROR) {
+                if (reason) *reason = IOERROR;
                 auto errStr = std::to_string(WSAGetLastError());
                 throw std::runtime_error("recv() " + errStr);
             } else if (err == 0) {
+                if (reason) *reason = CLOSED;
                 // connection was closed
                 goto closed;
             }
 
-            // increment the write pointeri
+            // increment the write pointer
             bufOff += err;
         }
         // was the socket closed?
         if (events.lNetworkEvents & FD_CLOSE) {
+            if (reason) *reason = CLOSED;
             goto closed;
         }
     }
 
     // finished reading
+    if (reason) *reason = SUCCESS;
+
 closed:;
 
     // zero terminate the buffer
@@ -441,6 +465,7 @@ closed:;
         bufSz += 1;
         char* newBuf = static_cast<char*>(realloc(buf, bufSz));
         if (!newBuf) {
+            if (reason) *reason = FAILED;
             free(buf);
             throw std::runtime_error("realloc()");
         }
@@ -449,7 +474,9 @@ closed:;
     }
 
     // clean-up
-    WSACloseEvent(event);
+    if (event != WSA_INVALID_EVENT) {
+        WSACloseEvent(event);
+    }
 
     if (written) {
         *written = bufOff;
@@ -459,7 +486,7 @@ closed:;
 
 // timed out
 timeout:;
-    // TODO: report timeout
+    if (reason) *reason = TIMEOUT;
     goto closed;
 }
 
