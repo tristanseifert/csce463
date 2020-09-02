@@ -64,7 +64,7 @@ HTTPClient::~HTTPClient()
  * @brief Connects to the remote server.
  * @param addr Address to connect to
 */
-void HTTPClient::connect(sockaddr& addr)
+void HTTPClient::connect(sockaddr *addr)
 {
     int err;
 
@@ -76,7 +76,7 @@ void HTTPClient::connect(sockaddr& addr)
     }
 
     // attempt to connect
-    err = ::connect(this->sock, &addr, sizeof(struct sockaddr_in));
+    err = ::connect(this->sock, addr, sizeof(struct sockaddr_in));
     if (err == SOCKET_ERROR) {
         auto errStr = std::to_string(WSAGetLastError());
         throw std::runtime_error("connect() " + errStr);

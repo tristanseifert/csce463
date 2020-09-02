@@ -64,6 +64,11 @@ public:
         return this->fragment;
     }
 
+    void setPath(const std::string& path)
+    {
+        this->path = path;
+    }
+
     std::string toString() const;
 
     static void resolve(const std::string host, struct sockaddr_storage* outAddr);

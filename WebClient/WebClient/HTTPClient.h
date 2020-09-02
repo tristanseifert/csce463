@@ -106,7 +106,7 @@ public:
     HTTPClient();
     virtual ~HTTPClient();
 
-    void connect(sockaddr& addr);
+    void connect(sockaddr *addr);
     Response fetch(const URL& url, const Method meth = GET, const size_t maxLen = 0, const size_t timeout = 10000);    
 
 private:

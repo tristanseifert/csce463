@@ -102,7 +102,7 @@ static int DoSingleUrl(int argc, const char** argv)
         // connect to the server
         std::cout << "\t* Connecting to server... " << std::flush;
         auto start = chrono::steady_clock::now();
-        client.connect((sockaddr&)addr);
+        client.connect((sockaddr *) &addr);
         auto end = chrono::steady_clock::now();
         std::cout << " done in "
                   << chrono::duration<double, milli>(end - start).count()
@@ -162,7 +162,10 @@ beach:;
     return status;
 }
 
-static int ValidateUrl(URL& url, std::unordered_set<std::string>& hosts,
+/**
+ * @brief Determines whether the given URL is unique on host and IP.
+*/
+static int ValidateUrlUnique(URL& url, std::unordered_set<std::string>& hosts,
     std::unordered_set<std::string>& ips, struct sockaddr_storage *addr)
 {
     using namespace std;
@@ -221,6 +224,127 @@ static int ValidateUrl(URL& url, std::unordered_set<std::string>& hosts,
 }
 
 /**
+ * @brief Checks whether the given URL allows crawling, by checking for the
+ * existence of a robots file.
+ * 
+ * @return 0 if no error and there is no robots file; negative for internal
+ * errors, positive number to indicate that there is a robots file.
+*/
+static int CheckUrlRobots(const URL& inUrl, const struct sockaddr_storage* addr)
+{
+    using namespace std;
+
+    HTTPClient client;
+    HTTPClient::Response res;
+
+    // create the robots URL
+    URL url = inUrl;
+    url.setPath("/robots.txt");
+
+    // connect and attempt to retrievethe document
+    try {
+        // connect to the server
+        std::cout << "\t  Connecting to server (for robots)... " << std::flush;
+        auto start = chrono::steady_clock::now();
+        client.connect((sockaddr*) addr);
+        auto end = chrono::steady_clock::now();
+        std::cout << " done in "
+                  << chrono::duration<double, milli>(end - start).count()
+                  << " ms" << std::endl;
+
+        // fetch the page body
+        std::cout << "\t  Loading... " << std::flush;
+        start = chrono::steady_clock::now();
+        res = client.fetch(url, HTTPClient::HEAD, (1024 * 16));
+        end = chrono::steady_clock::now();
+        std::cout << " done in "
+                  << chrono::duration<double, milli>(end - start).count()
+                  << " ms with " << res.getTotalReceived() << " bytes"
+                  << std::endl;
+
+        // verify header code
+        std::cout << "\t  Verifying header... status code " << res.getStatus() << std::endl;
+    } catch (std::exception& e) {
+        std::cerr << " failed: " << e.what() << std::endl;
+        return -1;
+    }
+
+    // success for 4xx codes
+    return (res.getStatus() >= 400 && res.getStatus() <= 499) ? 0 : 1;
+}
+
+/**
+ * @brief Fetches a single URL and prints statistics about it.
+ * 
+ * @return Number of links on the page, or a negative error code
+*/
+static int FetchUrl(const URL& inUrl, const struct sockaddr_storage* addr)
+{
+    using namespace std;
+
+    HTTPClient client;
+    HTTPClient::Response res;
+
+    // connect and retrieve the document
+    try {
+        // connect to the server
+        std::cout << "\t* Connecting to server... " << std::flush;
+        auto start = chrono::steady_clock::now();
+        client.connect((sockaddr*) addr);
+        auto end = chrono::steady_clock::now();
+        std::cout << " done in "
+                  << chrono::duration<double, milli>(end - start).count()
+                  << " ms" << std::endl;
+
+        // fetch the page body
+        std::cout << "\t  Loading... " << std::flush;
+        start = chrono::steady_clock::now();
+        res = client.fetch(inUrl, HTTPClient::GET, (1024 * 1024 * 2));
+        end = chrono::steady_clock::now();
+        std::cout << " done in "
+                  << chrono::duration<double, milli>(end - start).count()
+                  << " ms with " << res.getTotalReceived() << " bytes"
+                  << std::endl;
+
+        // verify header code
+        std::cout << "\t  Verifying header... status code " << res.getStatus() << std::endl;
+    } catch (std::exception& e) {
+        std::cerr << " failed: " << e.what() << std::endl;
+        return -1;
+    }
+
+    // parse page contents if 2xx code
+    if (res.getStatus() >= 200 && res.getStatus() <= 299) {
+        std::cout << "\t+ Parsing page... " << std::flush;
+        auto start = chrono::steady_clock::now();
+
+        // parse the page conents
+        HTMLParserBase parser;
+
+        char* code = reinterpret_cast<char*>(res.getPayload());
+        const size_t codeLen = res.getPayloadSize() + 1;
+
+        auto base = res.getUrl().toString();
+        char* baseUrl = const_cast<char*>(base.c_str());
+        size_t baseUrlLen = base.size();
+
+        int nLinks;
+        char* linkBuffer = parser.Parse(code, codeLen, baseUrl, baseUrlLen, &nLinks);
+
+        // print statistics
+        auto end = chrono::steady_clock::now();
+        std::cout << " done in "
+                  << chrono::duration<double, milli>(end - start).count()
+                  << " ms with " << nLinks << " links" << std::endl;
+        return nLinks;
+    }
+
+    // if we get here, the download succeded but we didn't parse it
+    return 0;
+
+}
+
+/**
  * @brief Evaluates a single URL.
 */
 static int DoMultipleUrlsStep(URL& url, std::unordered_set<std::string>& hosts, 
@@ -231,15 +355,27 @@ static int DoMultipleUrlsStep(URL& url, std::unordered_set<std::string>& hosts,
     int status;
     struct sockaddr_storage addr = { 0 };
 
-    // validate the URL (and bail if not valid)
-    status = ValidateUrl(url, hosts, ips, &addr);
+    // ensure the URL is unique (and bail if not)
+    status = ValidateUrlUnique(url, hosts, ips, &addr);
     if (status)
         return status;
 
     // request robots file
+    status = CheckUrlRobots(url, &addr);
+    if (status > 0) {
+        return 0;
+    } else if(status < 0) {
+        return status;
+    }
+
+    // fetch the url
+    status = FetchUrl(url, &addr);
+    if (status < 0) {
+        return status;
+    }
 
     // successfully dealt with this URL
-    return status;
+    return 0;
 }
 
 /**
@@ -302,9 +438,8 @@ static int DoMultipleUrls(int argc, const char** argv)
         cout << endl;
     }
 
-    // cleanup
-beach:;
-    return status;
+    // success!
+    return 0;
 }
 
 /**
