@@ -20,6 +20,14 @@ namespace webclient {
 */
 class HTTPClient {
 public:
+    enum Method {
+        // Performs a HTTP GET request
+        GET,
+        // Performs a HEAD request; no payload data is returned.
+        HEAD
+    };
+
+public:
     struct Response {
         friend class HTTPClient;
 
@@ -65,11 +73,18 @@ public:
                 return this->totalReceived;
             }
 
+            HTTPClient::Method getMethod() const
+            {
+                return this->meth;
+            }
+
             void release();
 
         private:
             /// URL from which content was fetched
             URL url;
+            /// HTTP method used
+            HTTPClient::Method meth = Method::GET;
 
             /// Length of payload, in bytes
             size_t payloadSize = 0;
@@ -79,7 +94,7 @@ public:
             int status = -1;
 
             /// Total bytes received
-           size_t totalReceived = 0;
+            size_t totalReceived = 0;
 
             /// Raw string for the HTTP response (minus payload)
             std::string responseHeader;
@@ -92,16 +107,26 @@ public:
     virtual ~HTTPClient();
 
     void connect(sockaddr& addr);
-    Response fetch(const URL& url);    
+    Response fetch(const URL& url, const Method meth = GET, const size_t maxLen = 0, const size_t timeout = 10000);    
 
 private:
-    void sendGet(const URL&);
+    void sendGet(const URL& url)
+    {
+        this->sendHttpRequest(url, GET);
+    }
+    void sendHead(const URL&url)
+    {
+        this->sendHttpRequest(url, HEAD);
+    }
+
+    void sendHttpRequest(const URL&, const Method);
+
     void parseHeaders(Response&, const void*, const size_t);
     void extractPayload(Response&, const void*, const size_t);
 
     static size_t getPayloadIndex(const void*, const size_t);
 
-    static void* readUntilEnd(SOCKET, size_t *);
+    static void* readUntilEnd(SOCKET, size_t *, size_t, size_t);
 
     static void send(SOCKET, const std::string&);
     static void send(SOCKET, const void*, size_t);
