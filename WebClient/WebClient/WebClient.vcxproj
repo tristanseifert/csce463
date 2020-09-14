@@ -147,12 +147,14 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="HTTPClient.cpp" />
+    <ClCompile Include="StatsThread.cpp" />
     <ClCompile Include="URL.cpp" />
     <ClCompile Include="WebClient.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="HTTPClient.h" />
     <ClInclude Include="pch.h" />
+    <ClInclude Include="StatsThread.h" />
     <ClInclude Include="URL.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

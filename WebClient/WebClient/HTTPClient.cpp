@@ -6,6 +6,7 @@
 #include "pch.h"
 #include "URL.h"
 #include "HTTPClient.h"
+#include "StatsThread.h"
 
 #include <iostream>
 #include <string>
@@ -105,6 +106,8 @@ HTTPClient::Response HTTPClient::fetch(const URL& url, const Method meth, const 
     if (this->sock == INVALID_SOCKET) {
         throw std::runtime_error("invalid socket");
     }
+
+    StatsThread::shared.state.numRequests++;
 
     // send the GET or HEAD request
     switch (meth) {
@@ -444,6 +447,7 @@ void* HTTPClient::readUntilEnd(SOCKET sock, size_t* written, size_t maxLen, size
             }
 
             // increment the write pointer
+            StatsThread::shared.state.bytesRx += err;
             bufOff += err;
         }
         // was the socket closed?
@@ -504,6 +508,10 @@ void HTTPClient::send(SOCKET sock, const void* buf, size_t bufSz)
 
     // try to send
     err = ::send(sock, static_cast<const char *>(buf), bufSz, 0);
+
+    if (err > 0) {
+        StatsThread::shared.state.bytesTx += err;
+    }
 
     // handle error cases
     if (err == SOCKET_ERROR) {

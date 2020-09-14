@@ -16,6 +16,7 @@
 
 #include "URL.h"
 #include "HTTPClient.h"
+#include "StatsThread.h"
 
 using namespace webclient;
 
@@ -379,35 +380,17 @@ static int DoMultipleUrlsStep(URL& url, std::unordered_set<std::string>& hosts,
 }
 
 /**
- * @brief Performs crawling over all URLs in the given file.
- * 
- * The entire list of files is loaded into memory, then deduplicated by hostname.
+ * @brief Fetches all URLs in the given file using single threaded IO.
+ * @param file File containing a list of URLs
 */
-static int DoMultipleUrls(int argc, const char** argv)
+static int DoMultipleUrlsSingleThreaded(std::ifstream &file)
 {
     using namespace std;
 
-    int status = -1;
-
+    int status;
     URL url;
-    std::vector<URL> urls;
     std::unordered_set<string> hosts;
     std::unordered_set<string> ips;
-
-    // validate args
-    if (atoi(argv[1]) != 1) {
-        std::cerr << "unsupported number of threads: " << argv[1] << std::endl;
-        return -1;
-    }
-
-    // open URL file for reading
-    ifstream file(argv[2]);
-    if (!file.is_open()) {
-        return -1;
-    }
-
-    filesystem::path p { argv[2] };
-    cout << "Opened " << p.filename() << " with size " << filesystem::file_size(p) << endl;
 
     // read each line
     string line;
@@ -426,8 +409,8 @@ static int DoMultipleUrls(int argc, const char** argv)
 
             cout << "\t  Parsing URL... host " << url.getHostname() << ", port "
                  << url.getPort() << ", request " << url.getPath() << endl;
-        } catch(std::exception &e) {
-            cerr << "\t  Parsing URL... failed: " << e.what() << endl;    
+        } catch (std::exception& e) {
+            cerr << "\t  Parsing URL... failed: " << e.what() << endl;
             continue;
         }
 
@@ -436,6 +419,54 @@ static int DoMultipleUrls(int argc, const char** argv)
 
         // prepare for next one
         cout << endl;
+    }
+
+    // success!
+    return 0;
+}
+
+/**
+ * @brief Performs crawling over all URLs in the given file.
+ * 
+ * The entire list of files is loaded into memory, then deduplicated by hostname.
+*/
+static int DoMultipleUrls(int argc, const char** argv)
+{
+    int status = -1;
+    int numThreads = atoi(argv[1]);
+
+    URL url;
+    std::vector<URL> urls;
+
+    // validate args
+    if (numThreads < 1) {
+        std::cerr << "unsupported number of threads: " << argv[1] << std::endl;
+        return -1;
+    }
+
+    // open URL file for reading
+    std::ifstream file(argv[2]);
+    if (!file.is_open()) {
+        return -1;
+    }
+
+    std::filesystem::path p { argv[2] };
+    std::cout << "Opened " << p.filename() << " with size " << std::filesystem::file_size(p) 
+              << std::endl;
+
+    // handle single threaded mode
+    if (numThreads == 1) {
+        return DoMultipleUrlsSingleThreaded(file);
+    }
+    // multithreaded mode
+    else {
+        // read all URLs into a buffer
+
+        // start stats thread
+        StatsThread::begin();
+
+        // wait for worker threads to quit and quit stats thread
+        StatsThread::quit();
     }
 
     // success!
