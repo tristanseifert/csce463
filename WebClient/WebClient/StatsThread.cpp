@@ -30,6 +30,9 @@ StatsThread::StatsThread()
 
     // set up thread
     this->thread = CreateThread(nullptr, kStackSize, StatsThreadEntry, this, CREATE_SUSPENDED, nullptr);
+    assert(this->thread);
+
+    SetThreadPriority(this->thread, THREAD_PRIORITY_ABOVE_NORMAL);
 }
 
 /**
@@ -125,11 +128,14 @@ void StatsThread::threadMain()
         str << std::endl;
 
         // bandwidth string
-        str << "\t*** crawling " << std::setprecision(1) << this->crawlSpeed << " pps @ " 
+        str << "\t*** crawling " << std::setprecision(4) << this->crawlSpeed << " pps @ " 
             << (this->bandwidth / 1024.f / 1024.f) << " Mbps";
 
         std::cout << str.str() << std::endl << std::flush;
     }
+
+    // print final stats
+    this->printFinalStats();
 
     // clean up
     std::cout << std::endl << std::flush;
@@ -147,13 +153,13 @@ void StatsThread::recalculateBandwidth()
 
     // capture values
     unsigned long bytes = this->state.bytesRx;
-    unsigned long pages = this->state.numRequests;
+    unsigned long pages = this->state.contentPagesAttempted;
     auto time = steady_clock::now();
 
     // calculate difference since last time
     unsigned long bytesDiff = bytes - this->bandwidthBytes;
     unsigned long pagesDiff = pages - this->bandwidthPages;
-    auto timeDiff = time - this->bandwidthTime;
+    auto timeDiff = duration_cast<duration<double>>(time - this->bandwidthTime);
 
     // calculate bandwidth (bits per sec)
     this->bandwidth = ((double)bytesDiff * 8.0) / timeDiff.count();
@@ -162,4 +168,48 @@ void StatsThread::recalculateBandwidth()
     this->bandwidthPages = pages;
     this->bandwidthBytes = bytes;
     this->bandwidthTime = time;
+}
+
+/**
+ * @brief Prints the final end of run statistics.
+*/
+void StatsThread::printFinalStats()
+{
+    using namespace std::chrono;
+
+    std::stringstream str;
+
+    // number of seconds elapsed
+    auto end = steady_clock::now();
+    auto secs = duration_cast<duration<double>>(end - this->startTime).count();
+
+    // URL count and frequency
+    str << "Extracted " << this->state.queueSize << " URLs @ " 
+        << (size_t)(((double)this->state.queueSize) / secs) << "/s" << std::endl;
+    // DNS resolution frequency
+    str << "Looked up " << this->state.numDnsLookups << " DNS names @ "
+        << (size_t)(((double)this->state.numDnsLookups) / secs) << "/s" << std::endl;
+    // Number of robots files
+    str << "Hit " << this->state.robotsAttempted << " robots @ "
+        << (size_t)(((double)this->state.robotsAttempted) / secs) << "/s" << std::endl;
+
+    // total pages crawled
+    str << "Crawled " << this->state.successPages << " pages @ "
+        << (size_t)(((double)this->state.successPages) / secs) << "/s " << "(" 
+        << (((double) this->state.bytesRx) / 1024.f / 1024.f) << " MB)" << std::endl;
+
+    // parsed links
+    str << "Parsed " << this->state.numLinks << " links @ "
+        << (size_t)(((double)this->state.numLinks) / secs) << "/s" << std::endl;
+
+    // HTTP code breakdown
+    str << "HTTP codes: ";
+    str << "2xx = " << this->state.httpStatusCodes[2] << " ";
+    str << "3xx = " << this->state.httpStatusCodes[3] << " ";
+    str << "4xx = " << this->state.httpStatusCodes[4] << " ";
+    str << "5xx = " << this->state.httpStatusCodes[5] << " ";
+    str << "other = " << this->state.httpStatusCodes[0] << " ";
+
+    // print it
+    std::cout << str.str() << std::flush;
 }

@@ -36,6 +36,7 @@ private:
     void threadMain();
 
     void recalculateBandwidth();
+    void printFinalStats();
 
 private:
     // handle to the stats thread
@@ -80,8 +81,12 @@ public:
 
         /// number of unique IPs (I)
         std::atomic_ulong uniqueIps = 0;
+        /// number of robots files requested
+        std::atomic_ulong robotsAttempted = 0;
         /// count of URLs that passed robot checks (R)
         std::atomic_ulong robotsCheckPassed = 0;
+        /// number of content pages requested
+        std::atomic_ulong contentPagesAttempted = 0;
         /// count of successfully crawled URLs (C)
         std::atomic_ulong successPages = 0;
         /// total number of links found (L)
@@ -94,6 +99,9 @@ public:
         std::atomic_ulong bytesRx = 0;
         /// Total number of bytes sent
         std::atomic_ulong bytesTx = 0;
+
+        /// number of each type of HTTP code (1xx = 1, 2xx = 2, .. 5xx = 5, 0 is "others")
+        std::atomic_ulong httpStatusCodes[6] = { 0, 0, 0, 0, 0, 0 };
     } state;
 
 public:

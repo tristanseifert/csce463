@@ -39,7 +39,9 @@ private:
     void threadMain();
     void processUrl(const std::string&);
     bool checkHostUniqueness(const URL&);
-    bool checkAddressUniqueness(URL&, struct sockaddr_storage *);
+    bool checkAddressUniqueness(URL&, struct sockaddr_storage*);
+    bool checkRobots(const URL&, const struct sockaddr_storage*);
+    size_t fetchPage(const URL&, const struct sockaddr_storage*);
 
 private:
     /// size of the worker thread stack, in bytes.

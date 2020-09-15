@@ -20,6 +20,7 @@
 #include "StatsThread.h"
 #include "WorkQueue.h"
 #include "WorkerThread.h"
+#include "ParserPool.h"
 
 using namespace webclient;
 
@@ -481,15 +482,21 @@ static int DoMultipleUrls(int argc, const char** argv)
 
         std::cout << "Read " << numUrls << " URLs from file" << std::endl;
 
-        // create worker threads
-        for (size_t i = 0; i < numThreads; i++) {
-            workers.push_back(std::make_shared<WorkerThread>());
-        }
-
-        // start stats thread and then the worker threads
+        // start the stats thred
         StatsThread::begin();
 
-        for (auto worker : workers) {
+        // allocate a proportionate number of parsers
+        size_t numBonusParsers = (numThreads / 25);
+        if (numBonusParsers > 50) {
+            ParserPool::shared.alloc(numBonusParsers - 50);
+            std::cout << "Parser pool has " << numBonusParsers << " parsers" << std::endl;
+        }
+
+        // create worker threads and start themn
+        for (size_t i = 0; i < numThreads; i++) {
+            auto worker = std::make_shared<WorkerThread>();
+
+            workers.push_back(worker);
             worker->start();
         }
 

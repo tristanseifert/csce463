@@ -4,6 +4,8 @@
 #include "StatsThread.h"
 #include "URL.h"
 #include "HTTPClient.h"
+#include "ParserPool.h"
+#include "HTMLParserBase.h"
 
 #include <string>
 #include <stdexcept>
@@ -110,6 +112,7 @@ void WorkerThread::processUrl(const std::string& urlStr)
 {
     URL url;
     struct sockaddr_storage addr = { 0 };
+    int links;
 
     // parse the URL and validate scheme
     url = URL(urlStr);
@@ -118,14 +121,100 @@ void WorkerThread::processUrl(const std::string& urlStr)
     }
     // check that the host is unique
     if (!this->checkHostUniqueness(url)) {
-        std::cerr << "Failed host uniqueness test: " << url.toString() << std::endl;
+//        std::cerr << "Failed host uniqueness test: " << url.toString() << std::endl;
         return;
     }
     // resolve the host, and validate the IP is unique
     if (!this->checkAddressUniqueness(url, &addr)) {
-        std::cerr << "Failed IP uniqueness test: " << url.toString() << std::endl;
+//        std::cerr << "Failed IP uniqueness test: " << url.toString() << std::endl;
         return;
     }
+
+    // fetch the robots file and ensure we can crawl it
+    if (!this->checkRobots(url, &addr)) {
+//        std::cerr << "Failed robots test: " << url.toString() << std::endl;
+        return;
+    }
+    StatsThread::shared.state.robotsCheckPassed++;
+
+    // go ahead and fetch the body. the number of links found is returned
+    links = this->fetchPage(url, &addr);
+    StatsThread::shared.state.numLinks += links;
+}
+
+/**
+ * @brief Checks whether the given website allows crawling (by checking for robots.txt missing)
+*/
+bool WorkerThread::checkRobots(const URL& inUrl, const struct sockaddr_storage* addr)
+{
+    using namespace std;
+
+    HTTPClient client;
+    HTTPClient::Response res;
+
+    // create the robots URL
+    URL url = inUrl;
+    url.setPath("/robots.txt");
+
+    // connect to the server and make HEAD request
+    client.connect((sockaddr*)addr);
+
+    StatsThread::shared.state.robotsAttempted++;
+    res = client.fetch(url, HTTPClient::HEAD, (1024 * 16));
+
+    // success for 4xx codes
+    return (res.getStatus() >= 400 && res.getStatus() <= 499) ? 0 : 1;
+}
+
+
+/**
+ * @brief Fetches the page content, and parses it to figure out how many links are in the page.
+ * 
+ * @return Number of links on page
+*/
+size_t WorkerThread::fetchPage(const URL& inUrl, const struct sockaddr_storage* addr)
+{
+    using namespace std;
+
+    size_t numLinks = 0;
+
+    HTTPClient client;
+    HTTPClient::Response res;
+
+    // connect to the server and make GET request
+    client.connect((sockaddr*)addr);
+
+    StatsThread::shared.state.contentPagesAttempted++;
+    res = client.fetch(inUrl, HTTPClient::GET, (1024 * 1024 * 2));
+
+    // success! parse the HTML for links
+    if (res.getStatus() >= 200 && res.getStatus() <= 299) {
+        StatsThread::shared.state.successPages++;
+
+        ParserPool::shared.getParser([this, &res, &numLinks](auto parser) {
+            // get the HTML payload
+            char* code = reinterpret_cast<char*>(res.getPayload());
+            const size_t codeLen = res.getPayloadSize() + 1;
+
+            // get base url as string
+            auto base = res.getUrl().toString();
+            char* baseUrl = const_cast<char*>(base.c_str());
+            size_t baseUrlLen = base.size();
+
+            // parse number of links
+            int nLinks;
+            char* linkBuffer = parser->Parse(code, codeLen, baseUrl, baseUrlLen, &nLinks);
+
+            // done!
+            numLinks = nLinks;
+        });
+    }
+
+    // clean up
+cleanup:;
+    res.release();
+
+    return numLinks;
 }
 
 /**
