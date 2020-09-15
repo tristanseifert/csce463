@@ -150,12 +150,16 @@
     <ClCompile Include="StatsThread.cpp" />
     <ClCompile Include="URL.cpp" />
     <ClCompile Include="WebClient.cpp" />
+    <ClCompile Include="WorkerThread.cpp" />
+    <ClCompile Include="WorkQueue.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="HTTPClient.h" />
     <ClInclude Include="pch.h" />
     <ClInclude Include="StatsThread.h" />
     <ClInclude Include="URL.h" />
+    <ClInclude Include="WorkerThread.h" />
+    <ClInclude Include="WorkQueue.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

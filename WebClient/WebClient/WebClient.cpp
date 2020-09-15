@@ -13,10 +13,13 @@
 #include <filesystem>
 #include <vector>
 #include <unordered_set>
+#include <memory>
 
 #include "URL.h"
 #include "HTTPClient.h"
 #include "StatsThread.h"
+#include "WorkQueue.h"
+#include "WorkerThread.h"
 
 using namespace webclient;
 
@@ -437,6 +440,7 @@ static int DoMultipleUrls(int argc, const char** argv)
 
     URL url;
     std::vector<URL> urls;
+    std::vector<std::shared_ptr<WorkerThread>> workers;
 
     // validate args
     if (numThreads < 1) {
@@ -461,11 +465,33 @@ static int DoMultipleUrls(int argc, const char** argv)
     // multithreaded mode
     else {
         // read all URLs into a buffer
+        std::string line;
+        while (std::getline(file, line)) {
+            if (line.empty()) {
+                continue;
+            }
 
-        // start stats thread
+            WorkQueue::shared.pushUrlStringUnsafe(line);
+        }
+
+        // create worker threads
+        for (size_t i = 0; i < numThreads; i++) {
+            workers.push_back(std::make_shared<WorkerThread>());
+        }
+
+        // start stats thread and then the worker threads
         StatsThread::begin();
 
+        for (auto worker : workers) {
+            worker->start();
+        }
+
         // wait for worker threads to quit and quit stats thread
+        for (auto worker : workers) {
+            worker->wait();
+        }
+    
+        workers.clear();
         StatsThread::quit();
     }
 
