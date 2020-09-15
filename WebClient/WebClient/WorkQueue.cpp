@@ -1,3 +1,4 @@
+#include "pch.h"
 #include "WorkQueue.h"
 #include "StatsThread.h"
 
@@ -12,6 +13,18 @@ WorkQueue WorkQueue::shared;
 WorkQueue::WorkQueue()
 {
     InitializeCriticalSection(&this->urlLock);
+    InitializeCriticalSection(&this->hostsLock);
+    InitializeCriticalSection(&this->addressesLock);
+}
+
+/**
+ * @brief Cleans up the allocated critical sections.
+*/
+WorkQueue::~WorkQueue()
+{
+    DeleteCriticalSection(&this->urlLock);
+    DeleteCriticalSection(&this->hostsLock);
+    DeleteCriticalSection(&this->addressesLock);
 }
 
 /**
@@ -59,4 +72,26 @@ mcdonalds:;
     // leave critical section and return status
     LeaveCriticalSection(&this->urlLock);
     return found;
+}
+
+/**
+ * @brief Allows access the  hosts set with locking around it.
+ * @param dude Function invoked. The lock is acquired and held for the duration of the function.
+*/
+void WorkQueue::lockedHostsAccess(std::function<void(std::unordered_set<std::string>&)> dude)
+{
+    EnterCriticalSection(&this->hostsLock);
+    dude(this->hosts);
+    LeaveCriticalSection(&this->hostsLock);
+}
+
+/**
+ * @brief Allows access the addresses set with locking around it.
+ * @param dude Function invoked. The lock is acquired and held for the duration of the function.
+*/
+void WorkQueue::lockedAddrAccess(std::function<void(std::unordered_set<std::string>&)> dude)
+{
+    EnterCriticalSection(&this->addressesLock);
+    dude(this->addresses);
+    LeaveCriticalSection(&this->addressesLock);
 }

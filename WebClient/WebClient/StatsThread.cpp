@@ -1,3 +1,4 @@
+#include "pch.h"
 #include "StatsThread.h"
 
 #include <cassert>
@@ -91,11 +92,11 @@ DWORD WINAPI webclient::StatsThreadEntry(LPVOID ctx)
 void StatsThread::threadMain()
 {
     using namespace std::chrono;
-
-    std::stringstream str;
-
     // wait on the quit event
-    do {
+    while (WaitForSingleObject(this->quitEvent, 2000) == WAIT_TIMEOUT)
+    {
+        std::stringstream str;
+
         // update some statistics
         this->recalculateBandwidth();
 
@@ -104,13 +105,11 @@ void StatsThread::threadMain()
         duration<double> secs = end - this->startTime;
 
         // print seconds and number of threads
-        str.clear();
-
         str << "[" << std::setw(3) << ((int)secs.count()) << "] ";
         str << std::setw(4) << this->state.numThreads << " ";
 
         // number of URLs in queue, host unique URLs
-        str << "Q " << std::setw(6) << this->state.queueSize << " ";
+        str << "Q " << std::setw(6) << (this->state.queueSize - this->state.queuePulled) << " ";
         str << "E " << std::setw(7) << this->state.queuePulled << " ";
         str << "H " << std::setw(6) << this->state.uniqueHosts << " ";
 
@@ -121,7 +120,7 @@ void StatsThread::threadMain()
         // URLs that passed the robots check, successful URLs, number of links
         str << "R " << std::setw(5) << this->state.robotsCheckPassed << " ";
         str << "C " << std::setw(5) << this->state.successPages << " ";
-        str << "L " << std::setw(6) << (this->state.numDnsLookups / 1000) << "K ";
+        str << "L " << std::setw(6) << (this->state.numLinks / 1000) << "K ";
 
         str << std::endl;
 
@@ -130,9 +129,10 @@ void StatsThread::threadMain()
             << (this->bandwidth / 1024.f / 1024.f) << " Mbps";
 
         std::cout << str.str() << std::endl << std::flush;
-    } while (WaitForSingleObject(this->quitEvent, 2000) == WAIT_TIMEOUT);
+    }
 
     // clean up
+    std::cout << std::endl << std::flush;
 }
 
 /**

@@ -1,8 +1,6 @@
 #ifndef STATSTHREAD_H
 #define STATSTHREAD_H
 
-#include <Windows.h>
-
 #include <chrono>
 #include <atomic>
 

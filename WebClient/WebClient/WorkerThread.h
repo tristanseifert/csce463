@@ -1,10 +1,12 @@
 #ifndef WORKERTHREAD_H
 #define WORKERTHREAD_H
 
-#include <Windows.h>
+#include <string>
 
 namespace webclient {
 DWORD WINAPI WorkerThreadEntry(LPVOID);
+
+class URL;
 
 /**
  * @brief Pulls URLs from the work queue and crawls them in a background thread, until the queue
@@ -35,6 +37,9 @@ private:
     void _waitForQuit();
 
     void threadMain();
+    void processUrl(const std::string&);
+    bool checkHostUniqueness(const URL&);
+    bool checkAddressUniqueness(URL&, struct sockaddr_storage *);
 
 private:
     /// size of the worker thread stack, in bytes.

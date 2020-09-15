@@ -451,6 +451,7 @@ static int DoMultipleUrls(int argc, const char** argv)
     // open URL file for reading
     std::ifstream file(argv[2]);
     if (!file.is_open()) {
+        std::cerr << "Failed to open '" << argv[2] << "'" << std::endl;
         return -1;
     }
 
@@ -464,6 +465,8 @@ static int DoMultipleUrls(int argc, const char** argv)
     }
     // multithreaded mode
     else {
+        size_t numUrls = 0;
+
         // read all URLs into a buffer
         std::string line;
         while (std::getline(file, line)) {
@@ -472,7 +475,11 @@ static int DoMultipleUrls(int argc, const char** argv)
             }
 
             WorkQueue::shared.pushUrlStringUnsafe(line);
+            numUrls++;
         }
+        file.close();
+
+        std::cout << "Read " << numUrls << " URLs from file" << std::endl;
 
         // create worker threads
         for (size_t i = 0; i < numThreads; i++) {
@@ -492,6 +499,8 @@ static int DoMultipleUrls(int argc, const char** argv)
         }
     
         workers.clear();
+
+        Sleep(2000);
         StatsThread::quit();
     }
 
