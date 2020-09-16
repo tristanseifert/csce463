@@ -381,7 +381,8 @@ void* HTTPClient::readUntilEnd(SOCKET sock, size_t* written, size_t maxLen, size
     // continuously read from the socket until closed or timeout
     while (true) {
         // wait for an event
-        err = WSAWaitForMultipleEvents(1, &event, true, remainingTimeout(), false);
+        auto timeLeft = remainingTimeout();
+        err = WSAWaitForMultipleEvents(1, &event, true, timeLeft, false);
 
         if (err == WSA_WAIT_FAILED) {
             if (reason) *reason = FAILED;
@@ -389,10 +390,6 @@ void* HTTPClient::readUntilEnd(SOCKET sock, size_t* written, size_t maxLen, size
             throw std::runtime_error("WSAWaitForMultipleEvents() " + errStr);
         }
         else if (err == WSA_WAIT_TIMEOUT) {
-            if (reason) *reason = TIMEOUT;
-            WSACloseEvent(event);
-            event = WSA_INVALID_EVENT;
-
             free(buf);
             buf = nullptr;
             goto timeout;

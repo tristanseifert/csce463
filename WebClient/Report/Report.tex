@@ -1,0 +1,87 @@
+\documentclass[11pt]{article}
+
+\usepackage[letterpaper, margin=0.74in]{geometry}
+\usepackage{lscape}
+
+\usepackage{graphicx}
+\usepackage{enumitem}
+\usepackage{color,soul}
+\usepackage{amsmath}
+\usepackage{xfrac}
+\usepackage{mathtools}
+
+\usepackage{xcolor}
+\definecolor{aggiemaroon}{RGB}{80,0,0}
+
+\usepackage{listings}
+\usepackage{caption}
+\DeclareCaptionFont{white}{\color{white}}
+\DeclareCaptionFormat{listing}{%
+  \parbox{\textwidth}{\colorbox{gray}{\parbox{\textwidth}{#1#2#3}}\vskip-4pt}}
+\captionsetup[lstlisting]{format=listing,labelfont=white,textfont=white}
+\lstset{frame=lrb,xleftmargin=\fboxsep,xrightmargin=-\fboxsep,basicstyle=\tiny\tt}
+
+\usepackage[mathletters,postscript]{ucs}
+\usepackage[utf8x]{inputenc}
+\usepackage{pmboxdraw}
+
+\usepackage{hyperref}
+\hypersetup{
+    colorlinks,
+    linkcolor=aggiemaroon,
+    linkbordercolor=blue,
+}
+\makeatletter
+\Hy@AtBeginDocument{%
+  \def\@pdfborder{0 0 1}% Overrides border definition set with colorlinks=true
+  \def\@pdfborderstyle{/S/U/W 1}% Overrides border style set with colorlinks=true
+                                % Hyperlink border style will be underline of width 1pt
+}
+\makeatother
+
+\usepackage{tikz}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.16}
+
+\usepackage{graphicx}
+\graphicspath{{images/}}
+
+\begin{document}
+%\newcommand{\answer}[1]{{\bf (Answer: #1)}}
+\newcommand{\answer}[1]{\mbox{~}}
+
+{
+\large  CSCE 463 \hfill Fall 2020\\
+ \begin{center}
+   \textbf{Homework 1 Report} \\
+   Tristan Seifert \\
+    \end{center}
+}
+
+%%%%%%%%
+\section{Questions}
+
+\begin{enumerate}
+
+\item {
+Adapting code from the previous two assignments was a little tricky, since I had written that code in a way to use as much RAM as possible to improve performance -- this wasn't an issue for me with 5000 threads, since I have 288 GB on my machine -- so I had to do a lot of reworking to minimize memory footprint to get it below 200 MBytes for 500 threads. This included tuning the stack sizes of worker threads, for example, and making sure data structures released extra memory.
+
+All of the URL parsing and networking happens in the \texttt{URL} and \texttt{HTTPClient} classes, respectively. These have been progressively enhanced since part 1.
+}
+
+\end{enumerate}
+
+%%%%%%%%
+\section{Trace}
+This trace was collected from running the program with $5000$ threads, and the provided 1M URL test file.  
+
+The program ran on a Windows 10 virtual machine with 48 GB RAM, 24 vCPU cores, which was in turn running on a Mac Pro (2019) with 288 GB memory, and a 24-core Xeon W-3265M CPU. 
+
+Speeds could probably have been higher by running Windows on the bare hardware, but I didn't want to go through the effort of repartitioning disks and messing with drivers for an operating system I won't touch again after taking this course. (Anything that's not an \textsc{unix} system feels weird!)
+
+\begin{lstlisting}[label=app-trace,caption=Output of Homework 1]
+Opened "URL-1M.txt" with size 66152005Read 1000000 URLs from fileParser pool has 200 parsers[  4] 1036 Q 981377 E   18628 H   3568 D   3568 I  1892 R  1102 C   140 L     12K        *** crawling 1879 pps @ 13.81 Mbps[  8] 1882 Q 958308 E   41696 H   6979 D   6979 I  3816 R  2154 C   300 L     23K        *** crawling 1949 pps @ 16.48 Mbps[ 12] 2439 Q 933948 E   66056 H  10395 D  10395 I  5897 R  3503 C   515 L     43K        *** crawling 2609 pps @ 23.32 Mbps[ 16] 3073 Q 911849 E   88155 H  13406 D  13406 I  7529 R  4512 C   712 L     60K        *** crawling 2009 pps @ 26.82 Mbps[ 20] 3651 Q 893260 E  106744 H  15967 D  15967 I  8691 R  5270 C   850 L     72K        *** crawling 1816 pps @ 22.43 Mbps[ 24] 4108 Q 872508 E  127496 H  19033 D  19033 I 10189 R  6269 C  1021 L     86K        *** crawling 1910 pps @ 19.59 Mbps[ 29] 4503 Q 853632 E  146372 H  21949 D  21949 I 11468 R  7114 C  1164 L     97K        *** crawling 1234 pps @ 12.04 Mbps[ 36] 5000 Q 833083 E  166921 H  24961 D  24961 I 12458 R  7748 C  1273 L    106K        *** crawling 746.1 pps @ 7.517 Mbps[ 42] 5000 Q 813659 E  186345 H  27239 D  27239 I 13340 R  8211 C  1357 L    112K        *** crawling 607.2 pps @ 6.187 Mbps[ 48] 5000 Q 796553 E  203451 H  29563 D  29563 I 13961 R  8567 C  1417 L    116K        *** crawling 436 pps @ 4.086 Mbps[ 55] 5000 Q 781066 E  218938 H  31738 D  31738 I 14441 R  8794 C  1464 L    119K        *** crawling 278 pps @ 4.995 Mbps[ 61] 5000 Q 764793 E  235211 H  33868 D  33868 I 14841 R  8964 C  1493 L    121K        *** crawling 192.9 pps @ 1.67 Mbps[ 68] 5000 Q 750571 E  249433 H  36177 D  36177 I 15239 R  9093 C  1509 L    122K        *** crawling 133.8 pps @ 1.519 Mbps[ 75] 5000 Q 737063 E  262941 H  38403 D  38403 I 15592 R  9283 C  1536 L    123K        *** crawling 220.6 pps @ 1.458 Mbps[ 81] 5000 Q 720907 E  279097 H  41166 D  41166 I 16761 R 10012 C  1639 L    129K        *** crawling 917.2 pps @ 7.792 Mbps[ 86] 5000 Q 706058 E  293946 H  43760 D  43760 I 17998 R 10841 C  1797 L    141K        *** crawling 1313 pps @ 16.88 Mbps[ 92] 5000 Q 688792 E  311212 H  46730 D  46730 I 19700 R 11888 C  1964 L    157K        *** crawling 1475 pps @ 14.19 Mbps[ 96] 5000 Q 674016 E  325988 H  49099 D  49099 I 21069 R 12682 C  2094 L    166K        *** crawling 1381 pps @ 12.53 Mbps[101] 5000 Q 658128 E  341876 H  51828 D  51828 I 22265 R 13477 C  2250 L    179K        *** crawling 1222 pps @ 14.35 Mbps[107] 5000 Q 642948 E  357056 H  54172 D  54172 I 23173 R 14099 C  2366 L    192K        *** crawling 961.2 pps @ 11.49 Mbps[112] 5000 Q 622991 E  377013 H  56641 D  56641 I 24344 R 14805 C  2455 L    200K        *** crawling 992.3 pps @ 6.495 Mbps[117] 5000 Q 606686 E  393318 H  58712 D  58712 I 25232 R 15261 C  2530 L    206K        *** crawling 689.9 pps @ 9.186 Mbps[122] 5000 Q 590865 E  409139 H  60493 D  60493 I 26127 R 15716 C  2607 L    212K        *** crawling 791.6 pps @ 8.291 Mbps[127] 5000 Q 572416 E  427588 H  62823 D  62823 I 26836 R 16253 C  2691 L    218K        *** crawling 746.7 pps @ 6.453 Mbps[135] 5000 Q 552451 E  447553 H  65579 D  65579 I 27757 R 16806 C  2787 L    224K        *** crawling 598.8 pps @ 7.39 Mbps[141] 5000 Q 533342 E  466662 H  68188 D  68188 I 28542 R 17201 C  2852 L    229K        *** crawling 457.7 pps @ 5.49 Mbps[147] 5000 Q 516425 E  483579 H  70239 D  70239 I 29034 R 17475 C  2887 L    234K        *** crawling 348.5 pps @ 5.961 Mbps[152] 5000 Q 495275 E  504729 H  72110 D  72110 I 29582 R 17796 C  2929 L    237K        *** crawling 491.6 pps @ 3.177 Mbps[159] 5000 Q 469907 E  530097 H  74919 D  74919 I 30529 R 18397 C  3026 L    245K        *** crawling 684.7 pps @ 6.34 Mbps[165] 5000 Q 449149 E  550855 H  77473 D  77473 I 31506 R 19009 C  3121 L    256K        *** crawling 840.7 pps @ 9.824 Mbps[170] 5000 Q 433080 E  566924 H  80005 D  80005 I 32540 R 19692 C  3232 L    276K        *** crawling 992.8 pps @ 12.93 Mbps[177] 5000 Q 414077 E  585927 H  82863 D  82863 I 33590 R 20336 C  3345 L    285K        *** crawling 832.7 pps @ 9.09 Mbps[182] 5000 Q 394659 E  605345 H  85507 D  85507 I 34470 R 20891 C  3440 L    294K        *** crawling 811 pps @ 8.497 Mbps[187] 5000 Q 375751 E  624253 H  88173 D  88173 I 35298 R 21424 C  3527 L    302K        *** crawling 782.5 pps @ 6.816 Mbps[192] 5000 Q 355553 E  644451 H  90745 D  90745 I 36220 R 21999 C  3608 L    308K        *** crawling 941.1 pps @ 15.1 Mbps[199] 5000 Q 335401 E  664603 H  93744 D  93744 I 36961 R 22468 C  3693 L    318K        *** crawling 585.6 pps @ 7.519 Mbps[205] 5000 Q 317495 E  682509 H  96377 D  96377 I 37539 R 22806 C  3758 L    323K        *** crawling 431.6 pps @ 3.65 Mbps[209] 5000 Q 304749 E  695255 H  98204 D  98204 I 37934 R 23089 C  3799 L    326K        *** crawling 506.9 pps @ 4.348 Mbps[215] 5000 Q 287887 E  712117 H 100700 D 100700 I 38597 R 23442 C  3866 L    334K        *** crawling 502.9 pps @ 5.132 Mbps[220] 5000 Q 271049 E  728955 H 103063 D 103063 I 39167 R 23734 C  3901 L    336K        *** crawling 387.9 pps @ 5.064 Mbps[226] 5000 Q 254138 E  745866 H 105382 D 105382 I 39738 R 23971 C  3936 L    339K        *** crawling 301.8 pps @ 2.487 Mbps[232] 5000 Q 238066 E  761938 H 107641 D 107641 I 40006 R 24147 C  3967 L    341K        *** crawling 230.9 pps @ 4.076 Mbps[239] 5000 Q 223163 E  776841 H 110046 D 110046 I 40371 R 24354 C  3995 L    342K        *** crawling 240.3 pps @ 2.41 Mbps[245] 5000 Q 203999 E  796005 H 112780 D 112780 I 40990 R 24704 C  4042 L    345K        *** crawling 424.1 pps @ 3.614 Mbps[251] 5000 Q 186923 E  813081 H 115274 D 115274 I 41561 R 25048 C  4085 L    349K        *** crawling 488.7 pps @ 4.595 Mbps[256] 5000 Q 171005 E  828999 H 117612 D 117612 I 42168 R 25424 C  4152 L    354K        *** crawling 606.7 pps @ 5.825 Mbps[262] 5000 Q 152388 E  847616 H 120219 D 120219 I 42737 R 25764 C  4214 L    358K        *** crawling 471.1 pps @ 5.441 Mbps[267] 5000 Q 132673 E  867331 H 122744 D 122744 I 43368 R 26148 C  4266 L    361K        *** crawling 558.5 pps @ 4.122 Mbps[273] 5000 Q 111438 E  888566 H 125560 D 125560 I 44188 R 26616 C  4355 L    370K        *** crawling 645.3 pps @ 8.754 Mbps[278] 5000 Q  94849 E  905155 H 128016 D 128016 I 44767 R 26971 C  4409 L    379K        *** crawling 560.6 pps @ 6.564 Mbps[284] 5000 Q  76824 E  923180 H 130737 D 130737 I 45455 R 27290 C  4447 L    383K        *** crawling 396.7 pps @ 3.263 Mbps[290] 5000 Q  59709 E  940295 H 133254 D 133254 I 45967 R 27621 C  4499 L    388K        *** crawling 458.3 pps @ 6.091 Mbps[295] 5000 Q  41612 E  958392 H 135604 D 135604 I 46435 R 27919 C  4564 L    394K        *** crawling 441.1 pps @ 5.986 Mbps[301] 5000 Q  22822 E  977182 H 137927 D 137927 I 46975 R 28179 C  4593 L    396K        *** crawling 339.4 pps @ 4.125 Mbps[305] 5000 Q    301 E  999703 H 139301 D 139301 I 47347 R 28370 C  4619 L    398K        *** crawling 389.9 pps @ 3.818 Mbps[314] 2002 Q      0 E 1000004 H 139301 D 139301 I 47727 R 28643 C  4668 L    401K        *** crawling 248.8 pps @ 2.55 Mbps[319]  103 Q      0 E 1000004 H 139301 D 139301 I 47961 R 28789 C  4695 L    404K        *** crawling 208.2 pps @ 3.399 Mbps[321]   83 Q      0 E 1000004 H 139301 D 139301 I 47961 R 28789 C  4696 L    404K        *** crawling 3.969 pps @ 0.8434 Mbps[323]   63 Q      0 E 1000004 H 139301 D 139301 I 47961 R 28789 C  4697 L    404K        *** crawling 0 pps @ 0.4377 Mbps[325]   56 Q      0 E 1000004 H 139301 D 139301 I 47961 R 28789 C  4697 L    404K        *** crawling 0 pps @ 0 Mbps[327]   46 Q      0 E 1000004 H 139301 D 139301 I 47961 R 28789 C  4697 L    404K        *** crawling 0 pps @ 0 Mbps[329]   43 Q      0 E 1000004 H 139301 D 139301 I 47961 R 28789 C  4697 L    404K        *** crawling 0 pps @ 0 Mbps[331]   34 Q      0 E 1000004 H 139301 D 139301 I 47961 R 28789 C  4697 L    404K        *** crawling 0 pps @ 0 Mbps[333]   25 Q      0 E 1000004 H 139301 D 139301 I 47961 R 28789 C  4697 L    404K        *** crawling 0 pps @ 0 Mbps[335]   17 Q      0 E 1000004 H 139301 D 139301 I 47961 R 28790 C  4697 L    404K        *** crawling 0 pps @ 0.0007684 Mbps[337]   11 Q      0 E 1000004 H 139301 D 139301 I 47961 R 28790 C  4697 L    404K        *** crawling 0 pps @ 0 Mbps[339]    2 Q      0 E 1000004 H 139301 D 139301 I 47961 R 28790 C  4697 L    404K        *** crawling 0 pps @ 0 Mbps[341]    1 Q      0 E 1000004 H 139301 D 139301 I 47961 R 28790 C  4697 L    404K        *** crawling 0 pps @ 0 Mbps[343]    1 Q      0 E 1000004 H 139301 D 139301 I 47961 R 28790 C  4697 L    404K        *** crawling 0 pps @ 0 Mbps[345]    1 Q      0 E 1000004 H 139301 D 139301 I 47961 R 28790 C  4697 L    404K        *** crawling 0 pps @ 0 Mbps[347]    1 Q      0 E 1000004 H 139301 D 139301 I 47961 R 28790 C  4697 L    404K        *** crawling 0 pps @ 0 Mbps[349]    1 Q      0 E 1000004 H 139301 D 139301 I 47961 R 28790 C  4697 L    404K        *** crawling 0 pps @ 0 Mbps[351]    1 Q      0 E 1000004 H 139301 D 139301 I 47961 R 28790 C  4697 L    404K        *** crawling 0 pps @ 0 Mbps[353]    0 Q      0 E 1000004 H 139301 D 139301 I 47961 R 28790 C  4697 L    404K        *** crawling 4 pps @ 0.001347 MbpsExtracted 1000004 URLs @ 2812/sLooked up 139301 DNS names @ 391/sHit 40373 robots @ 113/sCrawled 4697 pages @ 13/s (300.235 MB)Parsed 404525 links @ 1137/sHTTP codes: 2xx = 13952 3xx = 41401 4xx = 11886 5xx = 0 other = 0Z:\TamuCS\CSCE463\Homework\WebClient\x64\Release\WebClient.exe (process 11196) exited with code 0.Press any key to close this window . . .
+\end{lstlisting}
+
+\end{document}
+

@@ -509,6 +509,35 @@ static int DoMultipleUrls(int argc, const char** argv)
 
         Sleep(2000);
         StatsThread::quit();
+
+        // write the captured links to a file
+        if (WorkQueue::shared.captureLinks) {
+            std::ofstream out;
+            out.open("links.txt", std::ofstream::out | std::ofstream::binary | std::ofstream::app);
+
+            // print header
+            const auto now = time(nullptr);
+
+            char nowStr[64];
+            ctime_s(nowStr, 64, &now);
+            
+            out << std::endl << std::endl;
+            for (size_t i = 0; i < 80; i++) {
+                out << "=";
+            }
+            out << std::endl;
+            out << "Links found in " << numUrls << " input URLs at " << nowStr << std::endl;
+        
+
+            // print links
+            WorkQueue::shared.lockedLinksAccess([&out](auto links) {
+                for (auto link : *links) {
+                    out << link << std::endl;
+                }
+            });
+
+            out.close();
+        }
     }
 
     // success!

@@ -163,7 +163,10 @@ bool WorkerThread::checkRobots(const URL& inUrl, const struct sockaddr_storage* 
     res = client.fetch(url, HTTPClient::HEAD, (1024 * 16));
 
     // success for 4xx codes
-    return (res.getStatus() >= 400 && res.getStatus() <= 499) ? 0 : 1;
+    bool success = (res.getStatus() >= 400 && res.getStatus() <= 499) ? 0 : 1;
+    res.release();
+
+    return success;
 }
 
 
@@ -180,6 +183,9 @@ size_t WorkerThread::fetchPage(const URL& inUrl, const struct sockaddr_storage* 
 
     HTTPClient client;
     HTTPClient::Response res;
+    char* readPtr;
+
+    std::vector<std::string> links;
 
     // connect to the server and make GET request
     client.connect((sockaddr*)addr);
@@ -191,7 +197,9 @@ size_t WorkerThread::fetchPage(const URL& inUrl, const struct sockaddr_storage* 
     if (res.getStatus() >= 200 && res.getStatus() <= 299) {
         StatsThread::shared.state.successPages++;
 
-        ParserPool::shared.getParser([this, &res, &numLinks](auto parser) {
+        ParserPool::shared.getParser([this, &res, &numLinks, &links](auto parser) {
+            char* readPtr;
+
             // get the HTML payload
             char* code = reinterpret_cast<char*>(res.getPayload());
             const size_t codeLen = res.getPayloadSize() + 1;
@@ -205,10 +213,39 @@ size_t WorkerThread::fetchPage(const URL& inUrl, const struct sockaddr_storage* 
             int nLinks;
             char* linkBuffer = parser->Parse(code, codeLen, baseUrl, baseUrlLen, &nLinks);
 
+            // create vector of strings
+            if (!WorkQueue::shared.captureLinks || nLinks < 0)
+                goto skipWriteLinks;
+
+            readPtr = linkBuffer;
+            for (size_t i = 0; i < nLinks; i++) {
+                // extract the link
+                size_t len = strlen(readPtr);
+                auto str = std::string(readPtr, len);
+
+                links.push_back(str);
+
+                // goto next one (length + zero byte)
+                readPtr += len + 1;
+            }
+
+skipWriteLinks:;
             // done!
             numLinks = nLinks;
         });
     }
+
+    // write the links
+    WorkQueue::shared.lockedLinksAccess([this, &links, &inUrl](auto allLinks) {
+        allLinks->reserve(allLinks->size() + links.size());
+
+        std::string header = "\n*** " + inUrl.toString();
+        allLinks->push_back(header);
+
+        for (auto link : links) {
+            allLinks->push_back(link);
+        }
+    });
 
     // clean up
 cleanup:;
@@ -228,10 +265,10 @@ bool WorkerThread::checkHostUniqueness(const URL& url)
 
     // perform a locked operation against the set
     WorkQueue::shared.lockedHostsAccess([&url, &unique](auto hosts) {
-        if (hosts.find(url.getHostname()) != hosts.end()) {
+        if (hosts->find(url.getHostname()) != hosts->end()) {
             unique = false;
         } else {
-            hosts.insert(url.getHostname());
+            hosts->insert(url.getHostname());
 
             StatsThread::shared.state.uniqueHosts++;
             unique = true;
@@ -275,10 +312,10 @@ bool WorkerThread::checkAddressUniqueness(URL& url, struct sockaddr_storage* add
 
     // then, ensure the IP is unique
     WorkQueue::shared.lockedAddrAccess([&addrString, &unique](auto ips) {
-        if (ips.find(addrString) != ips.end()) {
+        if (ips->find(addrString) != ips->end()) {
             unique = false;
         } else {
-            ips.insert(addrString);
+            ips->insert(addrString);
 
             StatsThread::shared.state.uniqueIps++;
             unique = true;

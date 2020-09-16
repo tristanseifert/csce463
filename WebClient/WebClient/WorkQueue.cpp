@@ -15,6 +15,7 @@ WorkQueue::WorkQueue()
     InitializeCriticalSection(&this->urlLock);
     InitializeCriticalSection(&this->hostsLock);
     InitializeCriticalSection(&this->addressesLock);
+    InitializeCriticalSection(&this->linksLock);
 }
 
 /**
@@ -25,6 +26,7 @@ WorkQueue::~WorkQueue()
     DeleteCriticalSection(&this->urlLock);
     DeleteCriticalSection(&this->hostsLock);
     DeleteCriticalSection(&this->addressesLock);
+    DeleteCriticalSection(&this->linksLock);
 }
 
 /**
@@ -41,7 +43,7 @@ void WorkQueue::pushUrlString(const std::string& str)
 
 void WorkQueue::pushUrlStringUnsafe(const std::string& str)
 {
-    this->urlQueue.push(str);
+    this->urlQueue.push_back(str);
     StatsThread::shared.state.queueSize++;
 }
 
@@ -64,7 +66,7 @@ bool WorkQueue::popUrlString(std::string& outStr)
     // otherwise, pop the result
     outStr = this->urlQueue.front();
     
-    this->urlQueue.pop();
+    this->urlQueue.pop_front();
     StatsThread::shared.state.queuePulled++;
     found = true;
 
@@ -78,10 +80,10 @@ mcdonalds:;
  * @brief Allows access the  hosts set with locking around it.
  * @param dude Function invoked. The lock is acquired and held for the duration of the function.
 */
-void WorkQueue::lockedHostsAccess(std::function<void(std::unordered_set<std::string>&)> dude)
+void WorkQueue::lockedHostsAccess(std::function<void(std::unordered_set<std::string>*)> dude)
 {
     EnterCriticalSection(&this->hostsLock);
-    dude(this->hosts);
+    dude(&this->hosts);
     LeaveCriticalSection(&this->hostsLock);
 }
 
@@ -89,9 +91,23 @@ void WorkQueue::lockedHostsAccess(std::function<void(std::unordered_set<std::str
  * @brief Allows access the addresses set with locking around it.
  * @param dude Function invoked. The lock is acquired and held for the duration of the function.
 */
-void WorkQueue::lockedAddrAccess(std::function<void(std::unordered_set<std::string>&)> dude)
+void WorkQueue::lockedAddrAccess(std::function<void(std::unordered_set<std::string>*)> dude)
 {
     EnterCriticalSection(&this->addressesLock);
-    dude(this->addresses);
+    dude(&this->addresses);
     LeaveCriticalSection(&this->addressesLock);
+}
+
+
+/**
+ * @brief Performs a locked access to the links array.
+*/
+void WorkQueue::lockedLinksAccess(std::function<void(std::vector<std::string>*)> dude)
+{
+    if (!this->captureLinks)
+        return;
+
+    EnterCriticalSection(&this->linksLock);
+    dude(&this->links);
+    LeaveCriticalSection(&this->linksLock);
 }
