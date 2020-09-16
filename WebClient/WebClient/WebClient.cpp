@@ -116,7 +116,7 @@ static int DoSingleUrl(int argc, const char** argv)
         // fetch the page body
         std::cout << "\t  Loading... " << std::flush;
         start = chrono::steady_clock::now();
-        res = client.fetch(url);
+        res = client.fetch(url, HTTPClient::GET, (1024 * 1024 * 1024));
         end = chrono::steady_clock::now();
         std::cout << " done in "
                   << chrono::duration<double, milli>(end - start).count()
@@ -125,6 +125,12 @@ static int DoSingleUrl(int argc, const char** argv)
 
         // verify header code
         std::cout << "\t  Verifying header... status code " << res.getStatus() << std::endl;
+
+        // dechunking
+        if (res.getPreDechunkSize()) {
+            std::cout << "\t  Dechunking... body size was " << res.getPreDechunkSize()
+                      << ", now " << res.getPayloadSize() << std::endl;
+        }
     } catch (std::exception& e) {
         std::cerr << " failed: " << e.what() << std::endl;
         goto beach;

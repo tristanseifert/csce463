@@ -12,6 +12,7 @@
 
 #include <unordered_map>
 #include <regex>
+#include <algorithm>
 
 namespace webclient {
 /**
@@ -49,12 +50,16 @@ public:
                 return this->status;
             }
 
-            bool hasHeader(const std::string name) const
+            bool hasHeader(const std::string inName) const
             {
+                std::string name = inName;
+                std::transform(name.begin(), name.end(), name.begin(), ::toupper);
                 return this->headers.find(name) != this->headers.end();
             }
-            std::string getHeader(const std::string name) const
+            std::string getHeader(const std::string inName) const
             {
+                std::string name = inName;
+                std::transform(name.begin(), name.end(), name.begin(), ::toupper);
                 return this->headers.at(name);
             }
 
@@ -78,6 +83,11 @@ public:
                 return this->meth;
             }
 
+            size_t getPreDechunkSize() const
+            {
+                return this->preDechunkSize;
+            }
+
             void release();
 
         private:
@@ -95,6 +105,8 @@ public:
 
             /// Total bytes received
             size_t totalReceived = 0;
+            /// raw content size before dechunking (0 if no dechunking performed)
+            size_t preDechunkSize = 0;
 
             /// Raw string for the HTTP response (minus payload)
             std::string responseHeader;
@@ -107,7 +119,7 @@ public:
     virtual ~HTTPClient();
 
     void connect(sockaddr *addr);
-    Response fetch(const URL& url, const Method meth = GET, const size_t maxLen = 0, const size_t timeout = 10000);    
+    Response fetch(const URL& url, const Method meth = GET, const size_t maxLen = 0, const size_t timeout = 10000, bool chunked = true);    
 
 private:
     /// Descriptions of why a read ended
@@ -128,16 +140,16 @@ private:
         FAILED,
     };
 
-    void sendGet(const URL& url)
+    void sendGet(const URL& url, bool chunked)
     {
-        this->sendHttpRequest(url, GET);
+        this->sendHttpRequest(url, GET, chunked);
     }
-    void sendHead(const URL&url)
+    void sendHead(const URL&url, bool chunked)
     {
-        this->sendHttpRequest(url, HEAD);
+        this->sendHttpRequest(url, HEAD, chunked);
     }
 
-    void sendHttpRequest(const URL&, const Method);
+    void sendHttpRequest(const URL&, const Method, const bool);
 
     void parseHeaders(Response&, const void*, const size_t);
     void extractPayload(Response&, const void*, const size_t);
@@ -165,6 +177,7 @@ private:
 
     static const std::regex kStatusRegex;
     static const std::regex kHeaderRegex;
+    static const std::regex kChunkSizeRegex;
 };
 
 }

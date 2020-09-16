@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <regex>
 #include <chrono>
+#include <algorithm>
 
 using namespace webclient;
 
@@ -27,6 +28,11 @@ const std::regex HTTPClient::kStatusRegex = std::regex(R"blaze(^(?:HTTP\/)(\d+\.
  * @brief Used to parse HTTP headers into key/value pairs.
 */
 const std::regex HTTPClient::kHeaderRegex = std::regex(R"blaze(^([^:]+)(?:\:\s*)([^\r\n]+))blaze");
+
+/**
+ * @brief Used to parse chunk block sizes
+*/
+const std::regex HTTPClient::kChunkSizeRegex = std::regex(R"blaze(^([0-9A-Fa-f]+)(?:[\r\n]+))blaze");
 
 /**
  * @brief Trims whitespace from the start and end of the string
@@ -92,7 +98,7 @@ void HTTPClient::connect(sockaddr *addr)
  * @param timeout Maximum amount of time, in ms, to complete the request.
  * @return HTTP response (including payload/headers)
 */
-HTTPClient::Response HTTPClient::fetch(const URL& url, const Method meth, const size_t maxLen, const size_t timeout)
+HTTPClient::Response HTTPClient::fetch(const URL& url, const Method meth, const size_t maxLen, const size_t timeout, bool chunked)
 {
     Response resp(url);
     ReadCompletionReason reason = UNKNOWN;
@@ -112,11 +118,11 @@ HTTPClient::Response HTTPClient::fetch(const URL& url, const Method meth, const 
     // send the GET or HEAD request
     switch (meth) {
     case GET:
-        this->sendGet(url);
+        this->sendGet(url, chunked);
         break;
 
     case HEAD:
-        this->sendHead(url);
+        this->sendHead(url, chunked);
         break;
     }
 
@@ -155,7 +161,7 @@ HTTPClient::Response HTTPClient::fetch(const URL& url, const Method meth, const 
  * @param url URL to send the request to
  * @param meth Method to use in the header
 */
-void HTTPClient::sendHttpRequest(const URL& url, const Method meth)
+void HTTPClient::sendHttpRequest(const URL& url, const Method meth, const bool useHttp11)
 {
     std::stringstream request;
 
@@ -177,7 +183,11 @@ void HTTPClient::sendHttpRequest(const URL& url, const Method meth)
         request << "?" << url.getQuery();
     }
 
-    request << " HTTP/1.0" << kHeaderNewline;
+    if (useHttp11) {
+        request << " HTTP/1.1" << kHeaderNewline;
+    } else {
+        request << " HTTP/1.0" << kHeaderNewline;    
+    }
 
     request << "Host: " << url.getHostname() << kHeaderNewline;
 
@@ -249,6 +259,8 @@ void HTTPClient::parseHeaders(Response &response,  const void *read, const size_
         std::string name = *headers++;
         std::string value = *headers++;
 
+        std::transform(name.begin(), name.end(), name.begin(), ::toupper);
+
         response.headers[name] = value;
     }
 }
@@ -277,7 +289,62 @@ void HTTPClient::extractPayload(Response &response, const void *read, const size
     memcpy(buf, (reinterpret_cast<const char *>(read) + payloadIndex), 
            payloadSize);
 
-    response.payloadSize = payloadSize;
+    // handle dechunking if needed
+    bool needsDechunk = false;
+
+    if (response.hasHeader("Transfer-Encoding")) {
+        std::string value = response.getHeader("Transfer-Encoding");
+        std::transform(value.begin(), value.end(), value.begin(), ::tolower);
+
+        needsDechunk = (value.find("chunked") != std::string::npos); 
+    }
+
+    if (needsDechunk) {
+        size_t dechunkedSize = 0;
+        bool done = false;
+        char* read = static_cast<char*>(buf);
+
+        // read through the entire buffer and dechunk that shit
+        while (!done) {
+            size_t chunkLength = 0;
+            size_t dataOffset = 0; // length of chunk bytes
+
+            // read the chunk length string ([0-9A-F]*\r\n)
+            std::smatch match;
+            std::string chunkHeader = std::string(read, 16);
+
+            if (!std::regex_search(chunkHeader, match, kChunkSizeRegex)) {
+                throw std::runtime_error("dechunking failed");
+            }
+
+            const std::string lenStr = match[1];
+            chunkLength = stoul(lenStr, nullptr, 16);
+
+            const auto headerBytes = match.position() + match.length();
+
+//            std::cout << "pos " << match.position() << " len " << match.length() << std::endl;
+//            std::cout << "Length str: '" << lenStr << "', bytes " << chunkLength << ", bytes for header: " << headerBytes 
+//                      << std::endl;
+            
+            // is this a 0 length chunk (end?)
+            if (chunkLength == 0) {
+                done = true;
+                break;
+            }
+
+            // otherwise, shift the body block up and advance read pointer
+            memcpy(read, (read + dataOffset), chunkLength);
+            dechunkedSize += chunkLength;
+
+            read += chunkLength + headerBytes + 2; // plus two is for the terminating CR+LF of each chunk
+        }
+
+        response.payloadSize = dechunkedSize;
+        response.preDechunkSize = payloadSize;
+    } else {
+        response.payloadSize = payloadSize;    
+    }
+
     response.payload = buf;
 }
 
