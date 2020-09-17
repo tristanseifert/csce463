@@ -215,11 +215,11 @@ void URL::resolve(const std::string host, sockaddr_storage* outAddr)
     struct addrinfo* result = nullptr;
     struct addrinfo* ptr = nullptr;
 
-    StatsThread::shared.state.numDnsLookups++;
     err = getaddrinfo(host.c_str(), nullptr, &hints, &result);
     if (err != 0) {
         throw std::runtime_error("getaddrinfo(): " + std::to_string(err));
     }
+    StatsThread::shared.state.numDnsLookups++;
 
     // find the first address that's IPv4
     for (ptr = result; ptr != nullptr; ptr = ptr->ai_next) {
