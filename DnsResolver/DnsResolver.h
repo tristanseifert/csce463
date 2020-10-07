@@ -100,10 +100,10 @@ private:
     size_t putQuestion(void *writePtr, size_t writePtrLeft, const std::string& labels, uint16_t type, uint16_t resultClass);
 
     void splitLabel(const std::string& label, std::vector<std::string>& pieces);
-    size_t reconstructLabel(void* packet, void* labelStart, std::stringstream& name, bool *done = nullptr);
+    size_t reconstructLabel(void* packet, const size_t packetLen, void* labelStart, std::stringstream& name, bool* done = nullptr);
 
-    size_t readQuestions(void* packet, std::vector<Question> &questions);
-    size_t readAnswers(void* packet, void* start, std::vector<Answer> &answers);
+    size_t readQuestions(void* packet, const size_t packetLen, std::vector<Question>& questions);
+    size_t readAnswers(void* packet, const size_t packetLen, void* start, std::vector<Answer>& answers, const size_t count);
 
     size_t singlePacketTxn(SOCKET sock, const void* txBuf, const size_t txBufLen, void* rxBuf, const size_t rxBufLen);
 

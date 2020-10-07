@@ -101,8 +101,17 @@ void DnsResolver::resolveDomain(const std::string& name, Response& outResponse, 
     outResponse.success = (rcode == kRcodeSuccess);
 
     // parse the question/answer/authority/bonus sections
-    offset = this->readQuestions(response, outResponse.questions);
-    this->readAnswers(response, &response[offset], outResponse.answers);
+    offset = this->readQuestions(response, responseLen, outResponse.questions);
+
+    if (offset) {
+        offset = this->readAnswers(response, responseLen, &response[offset], outResponse.answers, resHeader->numAnswers);
+    }
+    if (offset) {
+        offset = this->readAnswers(response, responseLen, & response[offset], outResponse.authority, resHeader->numNameservers);
+    }
+    if (offset) {
+        offset = this->readAnswers(response, responseLen, &response[offset], outResponse.additional, resHeader->numAdditionalRsrc);
+    }
 }
 
 
@@ -184,7 +193,7 @@ void DnsResolver::splitLabel(const std::string& label, std::vector<std::string>&
  * @param name Stream into which label components are inserted sequentially
  * @return Number of bytes read, starting at labelStart, for this label
 */
-size_t DnsResolver::reconstructLabel(void* packet, void* labelStart, std::stringstream& name, bool *done)
+size_t DnsResolver::reconstructLabel(void* packet, const size_t packetLen, void* labelStart, std::stringstream& name, bool *done)
 {
     uint8_t* readPtr = reinterpret_cast<uint8_t*>(labelStart);
     size_t bytesRead = 0;
@@ -193,6 +202,11 @@ size_t DnsResolver::reconstructLabel(void* packet, void* labelStart, std::string
     while (*readPtr != 0) {
         size_t stringBytes = *readPtr;
 
+        // handle checking for end of packet
+        if ((readPtr - (uint8_t*)packet) > packetLen) {
+            throw std::runtime_error("unexpected end of packet");
+        }
+
         // directly encoded
         if (stringBytes <= 63) {
             std::string chunk((char*)readPtr + 1, stringBytes);
@@ -200,7 +214,7 @@ size_t DnsResolver::reconstructLabel(void* packet, void* labelStart, std::string
 
             readPtr += 1 + stringBytes;
         }
-        // TODO: handle compressed strings
+        // handle compressed strings
         else {
             bool ptrDone = false;
 
@@ -210,7 +224,16 @@ size_t DnsResolver::reconstructLabel(void* packet, void* labelStart, std::string
 
             // recurse on down
             uint16_t ptr = ((*readPtr++ << 8) | (*readPtr++)) & 0x3FFF;
-            this->reconstructLabel(packet, (reinterpret_cast<uint8_t*>(packet) + ptr), name, &ptrDone);
+            auto nextStart = (reinterpret_cast<uint8_t*>(packet) + ptr);
+
+            if (nextStart == labelStart) {
+                throw std::runtime_error("label jump loop");
+            }
+            if (ptr > packetLen) {
+                throw std::runtime_error("jump past end of packet");
+            }
+
+            this->reconstructLabel(packet, packetLen, nextStart, name, &ptrDone);
 
             if (ptrDone) {
                 goto gotFullLabel;
@@ -240,7 +263,7 @@ gotFullLabel:;
  * @param questions 
  * @return Offset into buffer for the answers section
 */
-size_t DnsResolver::readQuestions(void* packet, std::vector<Question> &questions)
+size_t DnsResolver::readQuestions(void* packet, const size_t packetLen, std::vector<Question>& questions)
 {
     auto header = reinterpret_cast<dns_header_t*>(packet);
     uint8_t* readPtr = reinterpret_cast<uint8_t*>(packet) + sizeof(dns_header_t);
@@ -250,10 +273,14 @@ size_t DnsResolver::readQuestions(void* packet, std::vector<Question> &questions
 
         // re-stringify the name
         std::stringstream name;
-        readPtr += this->reconstructLabel(packet, readPtr, name);
+        readPtr += this->reconstructLabel(packet, packetLen, readPtr, name);
 
         q.name = name.str();
         q.name.pop_back(); // remove trailing dot
+
+        if ((readPtr - (uint8_t*) packet) > packetLen) {
+            throw std::runtime_error("unexpected end of packet");
+        }
 
         // read the type/result code
         auto footer = reinterpret_cast<dns_question_footer_t*>(readPtr);
@@ -279,20 +306,24 @@ size_t DnsResolver::readQuestions(void* packet, std::vector<Question> &questions
  * @param answers 
  * @return Number of bytes consumed; add this to start ptr to get address of the authority section
 */
-size_t DnsResolver::readAnswers(void* packet, void* start, std::vector<Answer> &answers)
+size_t DnsResolver::readAnswers(void* packet, const size_t packetLen, void* start, std::vector<Answer> &answers, const size_t count)
 {
     auto header = reinterpret_cast<dns_header_t*>(packet);
     uint8_t* readPtr = reinterpret_cast<uint8_t*>(start);
 
-    for (size_t i = 0; i < header->numAnswers; i++) {
+    for (size_t i = 0; i < count; i++) {
         Answer a;
 
         // re-stringify the name of the answer
         std::stringstream name;
-        readPtr += this->reconstructLabel(packet, readPtr, name);
+        readPtr += this->reconstructLabel(packet, packetLen, readPtr, name);
 
         a.name = name.str();
         a.name.pop_back(); // remove trailing dot
+
+        if ((readPtr - (uint8_t*)packet) > packetLen) {
+            throw std::runtime_error("unexpected end of packet");
+        }
 
         // read the type/result code
         auto filling = reinterpret_cast<dns_answer_filling_t*>(readPtr);
@@ -303,31 +334,38 @@ size_t DnsResolver::readAnswers(void* packet, void* start, std::vector<Answer> &
 
         readPtr += sizeof(dns_answer_filling_t);
 
+        if ((readPtr - (uint8_t*)packet) > packetLen) {
+            throw std::runtime_error("unexpected end of packet");
+        }
+
         // lastly, the payload
         std::vector<std::byte> payload;
         size_t payloadLen = ntohs(filling->dataLen);
-
         payload.resize(payloadLen, std::byte(0));
-        memcpy(payload.data(), filling->data, payloadLen);
 
-        if (a.type == kRecordTypePTR || a.type == kRecordTypeCNAME) {
+        if (a.type == kRecordTypePTR || a.type == kRecordTypeCNAME || a.type == kRecordTypeNS) {
             std::stringstream ptrName;
-            this->reconstructLabel(packet, filling->data, ptrName);
+            this->reconstructLabel(packet, packetLen, filling->data, ptrName);
 
             a.labelValue = ptrName.str();
             a.labelValue.pop_back();
-        } 
+        } else {
+            if (((uint8_t *)&filling->data - (uint8_t*)packet) + payloadLen > packetLen) {
+                throw std::runtime_error("unexpected end of packet");
+            }
+
+            memcpy(payload.data(), filling->data, payloadLen);
+        }
 
         readPtr += payloadLen;
         a.payload = payload;
-
 
         // prepare for next
         answers.push_back(a);
     }
 
     // return the number of bytes read
-    return readPtr - ((uint8_t*)start);
+    return readPtr - ((uint8_t*)packet);
 }
 
 
@@ -450,6 +488,7 @@ std::ostream& operator<<(std::ostream& output, const DnsResolver::Answer& answer
     }
     case kRecordTypeNS:
         typeStr = "NS";
+        valueStr = answer.labelValue;
         break;
     case kRecordTypeCNAME:
         typeStr = "CNAME";
@@ -464,7 +503,7 @@ std::ostream& operator<<(std::ostream& output, const DnsResolver::Answer& answer
         break;
     }
 
-    output  << answer.name << " " << typeStr << " " << valueStr << " "
+    output  << answer.name << " " << typeStr << " " << valueStr
               << " TTL = " << (unsigned int) answer.ttl;
 
     return output;
