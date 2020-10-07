@@ -39,7 +39,7 @@ enum dns_flags {
     /// Mask for the rcode portion
     kRcodeMask = (0x000F),
     /// Mask for the opcode portion
-    kPacketOpcodeMask = (0x7800),
+    kOpcodeMask = (0x7800),
 };
 
 /**
@@ -103,6 +103,23 @@ typedef struct PACKED dns_question_footer {
     /// Desired class
     uint16_t reqClass;
 } dns_question_footer_t;
+
+/**
+ * @brief Middle 'filling' of an answer packet
+*/
+typedef struct PACKED dns_answer_filling {
+    /// Record type
+    uint16_t type;
+    /// Class of data
+    uint16_t dataClass;
+    /// Record TTL
+    uint32_t ttl;
+
+    /// Number of bytes of data
+    uint16_t dataLen;
+    /// Payload data
+    char data[];
+} dns_answer_filling_t;
 
 
 #ifdef WIN32

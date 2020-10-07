@@ -2,6 +2,7 @@
 #include "DnsResolver.h"
 #include "DnsTypes.h"
 
+#include <iostream>
 #include <cstring>
 #include <sstream>
 #include <algorithm>
@@ -24,31 +25,15 @@ void DnsResolver::setNameserverAddr(const struct sockaddr_storage& ipAddr, const
 }
 
 /**
- * @brief Resolves the PTR record for the given address.
- * @param addr 
- * @param outResponse 
-*/
-void DnsResolver::resolveReverse(const in_addr& addr, Response& outResponse)
-{
-    // TODO: yeet
-    
-    // fuck me
-}
-
-/**
  * @brief Resolves all A records for the given record.
  * @param name Record to resolve
  * @param outResponse Output
 */
-void DnsResolver::resolveDomain(const std::string& name, Response& outResponse, uint16_t type)
+void DnsResolver::resolveDomain(const std::string& name, Response& outResponse, uint16_t type, uint16_t txidHint)
 {
     int err;
     char response[kMaxPacketLen] = { 0 };
-    size_t responseLen;
-
-    std::random_device dev;
-    std::mt19937 random(dev());
-    std::uniform_int_distribution<> dist(0, 0xFFFF);
+    size_t responseLen, offset;
 
     // prepare a packet with the fixed header
     char questionPacket[kMaxPacketLen] = { 0 };
@@ -58,7 +43,16 @@ void DnsResolver::resolveDomain(const std::string& name, Response& outResponse, 
 
     questionHeader->flags = htons(kPacketTypeRequest | kRecursionDesired);
     questionHeader->numQuestions = htons(1);
-    questionHeader->txid = htons(dist(random));
+
+    if (txidHint) {
+        questionHeader->txid = htons(txidHint);
+    } else {
+        std::random_device dev;
+        std::mt19937 random(dev());
+        std::uniform_int_distribution<> dist(1, 0xFFFF);
+
+        questionHeader->txid = htons(dist(random));
+    }
 
     questionLen += this->putQuestion(&questionPacket[sizeof(dns_header_t)], 
         (questionLen - sizeof(dns_header_t)), name, type, 0x0001);
@@ -83,10 +77,29 @@ void DnsResolver::resolveDomain(const std::string& name, Response& outResponse, 
 
     closesocket(sock);
 
-    // inspect result
+    // determine if success or not
     outResponse.packetLen = responseLen;
     memcpy(outResponse.packetData, response, kMaxPacketLen);
+
+    auto resHeader = reinterpret_cast<dns_header_t*>(&response);
+
+    resHeader->txid = ntohs(resHeader->txid);
+    resHeader->flags = ntohs(resHeader->flags);
+    resHeader->numQuestions = ntohs(resHeader->numQuestions);
+    resHeader->numAnswers = ntohs(resHeader->numAnswers);
+    resHeader->numNameservers = ntohs(resHeader->numNameservers);
+    resHeader->numAdditionalRsrc = ntohs(resHeader->numAdditionalRsrc);
+
+    uint16_t rcode = (resHeader->flags & kRcodeMask);
+    outResponse.rcode = rcode;
+    outResponse.success = (rcode == kRcodeSuccess);
+
+    // parse the question/answer/authority/bonus sections
+    offset = this->readQuestions(response, outResponse.questions);
+    this->readAnswers(response, &response[offset], outResponse.answers);
 }
+
+
 
 /**
  * @brief Writes a question record to the given pointer. This record contains the given label
@@ -138,6 +151,8 @@ size_t DnsResolver::putQuestion(void* _writePtr, size_t _writePtrLen, const std:
     return writePtr - ((uint8_t *) _writePtr);
 }
 
+
+
 /**
  * @brief Splits a domain name by period into components
  * @param label 
@@ -152,6 +167,165 @@ void DnsResolver::splitLabel(const std::string& label, std::vector<std::string>&
         pieces.push_back(piece);
     }
 }
+
+/**
+ * @brief Reconstructs a DNS label from the given byte buffer.
+ * 
+ * This supports compression.
+ * 
+ * @param packet Address of the base of the packet (the fixed header)
+ * @param labelStart First byte of the label
+ * @param name Stream into which label components are inserted sequentially
+ * @return Number of bytes read, starting at labelStart, for this label
+*/
+size_t DnsResolver::reconstructLabel(void* packet, void* labelStart, std::stringstream& name, bool *done)
+{
+    uint8_t* readPtr = reinterpret_cast<uint8_t*>(labelStart);
+    size_t bytesRead = 0;
+
+    // read until we get the null terminator
+    while (*readPtr != 0) {
+        size_t stringBytes = *readPtr;
+
+        // directly encoded
+        if (stringBytes <= 63) {
+            std::string chunk((char*)readPtr + 1, stringBytes);
+            name << chunk << ".";
+
+            readPtr += 1 + stringBytes;
+        }
+        // TODO: handle compressed strings
+        else {
+            bool ptrDone = false;
+
+            if ((stringBytes & 0b11000000) != 0xc0) {
+                throw std::runtime_error("invalid label length");
+            }
+
+            // recurse on down
+            uint16_t ptr = ((*readPtr++ << 8) | (*readPtr++)) & 0x3FFF;
+            this->reconstructLabel(packet, (reinterpret_cast<uint8_t*>(packet) + ptr), name, &ptrDone);
+
+            if (ptrDone) {
+                goto gotFullLabel;
+            }
+        }
+    }
+    if (done) {
+        *done = true;
+    }
+    
+    // handle trailing zero byte
+    if (*readPtr == 0) {
+        readPtr++;
+    }
+
+gotFullLabel:;
+    // return number of bytes read
+    return readPtr - ((uint8_t*)labelStart);
+}
+
+
+
+/**
+ * @brief Parses the question section out of the given packet. Assumes questions come directly after
+ * the header in the given buffer.
+ * @param packet 
+ * @param questions 
+ * @return Offset into buffer for the answers section
+*/
+size_t DnsResolver::readQuestions(void* packet, std::vector<Question> &questions)
+{
+    auto header = reinterpret_cast<dns_header_t*>(packet);
+    uint8_t* readPtr = reinterpret_cast<uint8_t*>(packet) + sizeof(dns_header_t);
+
+    for (size_t i = 0; i < header->numQuestions; i++) {
+        Question q;
+
+        // re-stringify the name
+        std::stringstream name;
+        readPtr += this->reconstructLabel(packet, readPtr, name);
+
+        q.name = name.str();
+        q.name.pop_back(); // remove trailing dot
+
+        // read the type/result code
+        auto footer = reinterpret_cast<dns_question_footer_t*>(readPtr);
+        
+        q.type = ntohs(footer->type);
+        q.recordClass = ntohs(footer->reqClass);
+
+        readPtr += sizeof(dns_question_footer_t);
+
+        // prepare for next
+        questions.push_back(q);
+    }
+
+    // return the number of bytes read
+    return readPtr - ((uint8_t*) packet);
+}
+
+/**
+ * @brief Parses the answers section of the given packet.
+ * 
+ * @param packet 
+ * @param start 
+ * @param answers 
+ * @return Number of bytes consumed; add this to start ptr to get address of the authority section
+*/
+size_t DnsResolver::readAnswers(void* packet, void* start, std::vector<Answer> &answers)
+{
+    auto header = reinterpret_cast<dns_header_t*>(packet);
+    uint8_t* readPtr = reinterpret_cast<uint8_t*>(start);
+
+    for (size_t i = 0; i < header->numAnswers; i++) {
+        Answer a;
+
+        // re-stringify the name of the answer
+        std::stringstream name;
+        readPtr += this->reconstructLabel(packet, readPtr, name);
+
+        a.name = name.str();
+        a.name.pop_back(); // remove trailing dot
+
+        // read the type/result code
+        auto filling = reinterpret_cast<dns_answer_filling_t*>(readPtr);
+
+        a.type = ntohs(filling->type);
+        a.payloadClass = ntohs(filling->dataClass);
+        a.ttl = ntohl(filling->ttl);
+
+        readPtr += sizeof(dns_answer_filling_t);
+
+        // lastly, the payload
+        std::vector<std::byte> payload;
+        size_t payloadLen = ntohs(filling->dataLen);
+
+        payload.resize(payloadLen, std::byte(0));
+        memcpy(payload.data(), filling->data, payloadLen);
+
+        if (a.type == kRecordTypePTR) {
+            std::stringstream ptrName;
+            this->reconstructLabel(packet, filling->data, ptrName);
+
+            a.ptrValue = ptrName.str();
+            a.ptrValue.pop_back();
+        }
+
+        readPtr += payloadLen;
+        a.payload = payload;
+
+
+        // prepare for next
+        answers.push_back(a);
+    }
+
+    // return the number of bytes read
+    return readPtr - ((uint8_t*)start);
+}
+
+
+
 
 /**
  * @brief Runs a single packet UDP transaction against the DNS server.
@@ -173,7 +347,7 @@ size_t DnsResolver::singlePacketTxn(SOCKET sock, const void* txBuf, const size_t
     socklen_t respFromLen = sizeof(struct sockaddr_storage);
 
     // transmit the packet
-    err = sendto(sock, (const char*)txBuf, txBufLen, 0, (struct sockaddr*)&this->toQuery, 
+    err = sendto(sock, (const char*)txBuf, (int) txBufLen, 0, (struct sockaddr*)&this->toQuery, 
         sizeof(struct sockaddr_in));
     if (err == -1) {
         throw std::runtime_error("sendto() failed: " + std::to_string(WSAGetLastError()));
@@ -190,4 +364,55 @@ size_t DnsResolver::singlePacketTxn(SOCKET sock, const void* txBuf, const size_t
     // copy out
     memcpy(_rxBuf, packet, min(packetLen, _rxBufLen));
     return packetLen;
+}
+
+
+
+/**
+ * @brief Prints a string representation of a question record.
+*/
+std::ostream& operator<<(std::ostream& output, const DnsResolver::Question& question)
+{
+    output << question.name << " type " << (unsigned int) question.type 
+           << " class " << (unsigned int) question.recordClass;
+    return output;
+}
+ 
+/**
+ * @brief Prints a string representation of an answer record.
+*/
+std::ostream& operator<<(std::ostream& output, const DnsResolver::Answer& answer) {
+    std::string typeStr = std::to_string(answer.type);
+    std::string valueStr = "(unknown value)";
+
+    switch (answer.type) {
+    case kRecordTypeA: {
+        typeStr = "A";
+
+        std::stringstream addrStream;
+        addrStream << (int)answer.payload[0] << ".";
+        addrStream << (int)answer.payload[1] << ".";
+        addrStream << (int)answer.payload[2] << ".";
+        addrStream << (int)answer.payload[3];
+
+        valueStr = addrStream.str();
+
+        break;
+    }
+    case kRecordTypeNS:
+        typeStr = "NS";
+        break;
+    case kRecordTypePTR:
+        typeStr = "PTR";
+        valueStr = answer.ptrValue;
+        break;
+    case kRecordTypeMX:
+        typeStr = "MX";
+        break;
+    }
+
+    output  << answer.name << " " << typeStr << " " << valueStr << " "
+              << " TTL = " << (unsigned int) answer.ttl;
+
+    return output;
 }

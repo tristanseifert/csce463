@@ -2,10 +2,14 @@
 //
 #include "pch.h"
 #include "DnsResolver.h"
+#include "DnsTypes.h"
 
+#include <sstream>
 #include <string>
 #include <stdexcept>
 #include <iostream>
+#include <iomanip>
+#include <random>
 
 #ifdef _WIN32
 // this is fucking stupid
@@ -36,6 +40,33 @@ static void PrintUsage(const char *name)
 {
     std::cout << "usage: " << name << " [record] [server address]" << std::endl;
     std::cout << "\twhere record is a domain name or IPv4 in dotted quad form" << std::endl;
+}
+
+/**
+ * @brief Prints the DNS response.
+*/
+static void PrintResponse(const DnsResolver::Response& resp)
+{
+    // questions section
+    std::cout << "  ------------ [questions] ----------" << std::endl;
+    for (auto const& question : resp.questions) {
+        std::cout << "    " << question << std::endl;
+    }
+    // answers section
+    std::cout << "  ------------ [answers] ------------" << std::endl;
+    for (auto const& answer : resp.answers) {
+        std::cout << "    " << answer << std::endl;
+    }
+    // authority section
+    std::cout << "  ------------ [authority] ----------" << std::endl;
+    for (auto const& answer : resp.authority) {
+        std::cout << "    " << answer << std::endl;
+    }
+    // additional records section
+    std::cout << "  ------------ [additional] ---------" << std::endl;
+    for (auto const& answer : resp.additional) {
+        std::cout << "    " << answer << std::endl;
+    }
 }
 
 /**
@@ -74,7 +105,7 @@ int main(int argc, const char** argv)
     }
 
     // determine if we need to look up a domain or reverse DNS
-    const std::string resolveStr(argv[1]);
+    std::string resolveStr(argv[1]);
 
     err = inet_pton(AF_INET, resolveStr.c_str(), &reverseAddr);
 
@@ -84,18 +115,49 @@ int main(int argc, const char** argv)
     }
     reverse = (err == 1);
 
+    if (reverse) {
+        std::stringstream reverse;
+
+        for (size_t i = 0; i < 4; i++) {
+            uint8_t value = (reverseAddr.S_un.S_addr & (0xFF << (8 * (3 - i)))) >> (8 * (3 - i));
+            reverse << (unsigned int)value << ".";
+        }
+
+        reverse << "in-addr.arpa";
+
+        resolveStr = reverse.str();
+    }
+
+    // calculate a txid hint (random 16-bit value)
+    std::random_device dev;
+    std::mt19937 random(dev());
+    std::uniform_int_distribution<> dist(1, 0xFFFF);
+
+    uint16_t txidHint = dist(random);
+    uint16_t type = reverse ? kRecordTypePTR : kRecordTypeA;
+
+    // print lookup details
+    std::cout << "Lookup  : " << argv[1] << std::endl;
+    std::cout << "Query   : " << resolveStr << ", type " << type << ", TXID 0x" << std::hex 
+              << std::setw(4) << txidHint << std::dec << std::endl;
+    std::cout << "Server  : " << serverAddrStr << std::endl;
+    std::cout << "********************************" << std::endl;
+
     // do it
     DnsResolver resolver(serverAddr);
     DnsResolver::Response dnsResp;
 
     try {
-        if (reverse) {
-            resolver.resolveReverse(reverseAddr, dnsResp);
-        } else {
-            resolver.resolveDomain(resolveStr, dnsResp);
-        }
+        resolver.resolveDomain(resolveStr, dnsResp, type, txidHint);
     } catch (const std::exception& e) {
         std::cerr << "DNS failure: " << e.what() << std::endl;
         return -1;
+    }
+
+    if (dnsResp.isSuccess()) {
+        std::cout << "  Succeeded with Rcode = " << dnsResp.rcode << std::endl;
+        PrintResponse(dnsResp);
+    } else {
+        std::cout << "  Failed with Rcode = " << dnsResp.rcode << std::endl;
     }
 }
