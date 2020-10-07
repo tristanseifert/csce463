@@ -48,24 +48,32 @@ static void PrintUsage(const char *name)
 static void PrintResponse(const DnsResolver::Response& resp)
 {
     // questions section
-    std::cout << "  ------------ [questions] ----------" << std::endl;
-    for (auto const& question : resp.questions) {
-        std::cout << "    " << question << std::endl;
+    if (!resp.questions.empty()) {
+        std::cout << "  ------------ [questions] ----------" << std::endl;
+        for (auto const& question : resp.questions) {
+            std::cout << "    " << question << std::endl;
+        }
     }
     // answers section
-    std::cout << "  ------------ [answers] ------------" << std::endl;
-    for (auto const& answer : resp.answers) {
-        std::cout << "    " << answer << std::endl;
+    if (!resp.answers.empty()) {
+        std::cout << "  ------------ [answers] ------------" << std::endl;
+        for (auto const& answer : resp.answers) {
+            std::cout << "    " << answer << std::endl;
+        }
     }
     // authority section
-    std::cout << "  ------------ [authority] ----------" << std::endl;
-    for (auto const& answer : resp.authority) {
-        std::cout << "    " << answer << std::endl;
+    if (!resp.authority.empty()) {
+        std::cout << "  ------------ [authority] ----------" << std::endl;
+        for (auto const& answer : resp.authority) {
+            std::cout << "    " << answer << std::endl;
+        }
     }
     // additional records section
-    std::cout << "  ------------ [additional] ---------" << std::endl;
-    for (auto const& answer : resp.additional) {
-        std::cout << "    " << answer << std::endl;
+    if (!resp.additional.empty()) {
+        std::cout << "  ------------ [additional] ---------" << std::endl;
+        for (auto const& answer : resp.additional) {
+            std::cout << "    " << answer << std::endl;
+        }
     }
 }
 
@@ -153,6 +161,13 @@ int main(int argc, const char** argv)
         std::cerr << "DNS failure: " << e.what() << std::endl;
         return -1;
     }
+
+    auto dnsHeader = reinterpret_cast<dns_header_t*>(&dnsResp.packetData);
+    std::cout << "  TXID 0x" << std::hex << std::setw(4) << dnsHeader->txid << std::dec
+              << " flags 0x" << std::hex << dnsHeader->flags << std::dec
+              << " questions " << dnsHeader->numQuestions << " answers " << dnsHeader->numAnswers
+              << " authority " << dnsHeader->numNameservers << " additional "
+              << dnsHeader->numAdditionalRsrc << std::endl;
 
     if (dnsResp.isSuccess()) {
         std::cout << "  Succeeded with Rcode = " << dnsResp.rcode << std::endl;

@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <regex>
 #include <random>
+#include <chrono>
 
 /**
  * @brief Sets the given address as the nameserver we're querying.
@@ -54,7 +55,7 @@ void DnsResolver::resolveDomain(const std::string& name, Response& outResponse, 
         questionHeader->txid = htons(dist(random));
     }
 
-    questionLen += this->putQuestion(&questionPacket[sizeof(dns_header_t)], 
+    questionLen += this->putQuestion(&questionPacket[sizeof(dns_header_t)],
         (questionLen - sizeof(dns_header_t)), name, type, 0x0001);
 
     // open the UDP socket, then send txn
@@ -77,18 +78,23 @@ void DnsResolver::resolveDomain(const std::string& name, Response& outResponse, 
 
     closesocket(sock);
 
-    // determine if success or not
-    outResponse.packetLen = responseLen;
-    memcpy(outResponse.packetData, response, kMaxPacketLen);
-
+    // validate the txid
     auto resHeader = reinterpret_cast<dns_header_t*>(&response);
 
+    if (ntohs(resHeader->txid) != htons(questionHeader->txid)) {
+        throw std::runtime_error("txid mismatch");
+    }
+
+    // determine if success or not
     resHeader->txid = ntohs(resHeader->txid);
     resHeader->flags = ntohs(resHeader->flags);
     resHeader->numQuestions = ntohs(resHeader->numQuestions);
     resHeader->numAnswers = ntohs(resHeader->numAnswers);
     resHeader->numNameservers = ntohs(resHeader->numNameservers);
     resHeader->numAdditionalRsrc = ntohs(resHeader->numAdditionalRsrc);
+
+    outResponse.packetLen = responseLen;
+    memcpy(outResponse.packetData, response, kMaxPacketLen);
 
     uint16_t rcode = (resHeader->flags & kRcodeMask);
     outResponse.rcode = rcode;
@@ -211,9 +217,6 @@ size_t DnsResolver::reconstructLabel(void* packet, void* labelStart, std::string
             }
         }
     }
-    if (done) {
-        *done = true;
-    }
     
     // handle trailing zero byte
     if (*readPtr == 0) {
@@ -221,6 +224,9 @@ size_t DnsResolver::reconstructLabel(void* packet, void* labelStart, std::string
     }
 
 gotFullLabel:;
+    if (done) {
+        *done = true;
+    }
     // return number of bytes read
     return readPtr - ((uint8_t*)labelStart);
 }
@@ -304,13 +310,13 @@ size_t DnsResolver::readAnswers(void* packet, void* start, std::vector<Answer> &
         payload.resize(payloadLen, std::byte(0));
         memcpy(payload.data(), filling->data, payloadLen);
 
-        if (a.type == kRecordTypePTR) {
+        if (a.type == kRecordTypePTR || a.type == kRecordTypeCNAME) {
             std::stringstream ptrName;
             this->reconstructLabel(packet, filling->data, ptrName);
 
-            a.ptrValue = ptrName.str();
-            a.ptrValue.pop_back();
-        }
+            a.labelValue = ptrName.str();
+            a.labelValue.pop_back();
+        } 
 
         readPtr += payloadLen;
         a.payload = payload;
@@ -340,26 +346,69 @@ size_t DnsResolver::singlePacketTxn(SOCKET sock, const void* txBuf, const size_t
 {
     int err = 0;
     size_t packetLen = 0;
+    size_t attempt = 0;
+
+    // fixed timeout value
+    struct timeval timeout = {0};
+    timeout.tv_sec = 10;
 
     // buffer to read into
-    char packet[kMaxPacketLen] = {0};
+    char packet[kMaxPacketLen] = { 0 };
     struct sockaddr_storage respFrom;
     socklen_t respFromLen = sizeof(struct sockaddr_storage);
 
-    // transmit the packet
-    err = sendto(sock, (const char*)txBuf, (int) txBufLen, 0, (struct sockaddr*)&this->toQuery, 
-        sizeof(struct sockaddr_in));
-    if (err == -1) {
-        throw std::runtime_error("sendto() failed: " + std::to_string(WSAGetLastError()));
+    while (attempt++ < kMaxRetransmissions) {
+        auto startTime = std::chrono::steady_clock::now();
+        auto start = std::chrono::duration_cast<std::chrono::milliseconds>(startTime.time_since_epoch()).count();
+
+        std::cout << "Attempt " << attempt << " with " << txBufLen << " bytes...";
+
+        // transmit the packet
+        err = sendto(sock, (const char*)txBuf, (int)txBufLen, 0, (struct sockaddr*)&this->toQuery,
+            sizeof(struct sockaddr_in));
+        if (err == -1) {
+            std::cout << "socket error: " << WSAGetLastError() << std::endl;
+            throw std::runtime_error("sendto() failed: " + std::to_string(WSAGetLastError()));
+        }
+
+        // wait for activity on the socket
+        fd_set set;
+        FD_ZERO(&set);
+        FD_SET(sock, &set);
+
+        err = select(0, &set, nullptr, nullptr, &timeout);
+        if (err == -1) {
+            throw std::runtime_error("select() failed");
+        }
+        if (err == 0) {
+            auto nowTime = std::chrono::steady_clock::now();
+            auto now = std::chrono::duration_cast<std::chrono::milliseconds>(nowTime.time_since_epoch()).count();
+
+            std::cout << " timeout in " << (now - start) << " ms" << std::endl;
+            continue;
+        }
+
+        // receive the packet
+        err = recvfrom(sock, packet, kMaxPacketLen, 0, (struct sockaddr*)&respFrom, &respFromLen);
+        if (err == -1) {
+            std::cout << "socket error: " << WSAGetLastError() << std::endl;
+            throw std::runtime_error("recvfrom() failed: " + std::to_string(WSAGetLastError()));
+        }
+        packetLen = err;
+
+        // print time taken to receive this packet, then process it
+        auto nowTime = std::chrono::steady_clock::now();
+        auto now = std::chrono::duration_cast<std::chrono::milliseconds>(nowTime.time_since_epoch()).count();
+
+        std::cout << " response in " << (now - start) << " ms with " << packetLen << " bytes" << std::endl;
+        goto gotPacket;
     }
 
-    // receive the packet
-    // TODO: handle timeouts/retransmissions
-    err = recvfrom(sock, packet, kMaxPacketLen, 0, (struct sockaddr *) &respFrom, &respFromLen);
-    if (err == -1) {
-        throw std::runtime_error("recvfrom() failed: " + std::to_string(WSAGetLastError()));
-    }
-    packetLen = err;
+    // failed to receive packet
+    throw std::runtime_error("failed to receive DNS response");
+
+ gotPacket:;
+    // TODO: make sure packet came from the same host that we sent data to
 
     // copy out
     memcpy(_rxBuf, packet, min(packetLen, _rxBufLen));
@@ -402,9 +451,13 @@ std::ostream& operator<<(std::ostream& output, const DnsResolver::Answer& answer
     case kRecordTypeNS:
         typeStr = "NS";
         break;
+    case kRecordTypeCNAME:
+        typeStr = "CNAME";
+        valueStr = answer.labelValue;
+        break;
     case kRecordTypePTR:
         typeStr = "PTR";
-        valueStr = answer.ptrValue;
+        valueStr = answer.labelValue;
         break;
     case kRecordTypeMX:
         typeStr = "MX";

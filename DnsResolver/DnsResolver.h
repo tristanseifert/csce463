@@ -13,6 +13,8 @@ class DnsResolver {
 private:
     /// Maximum DNS packet size
     constexpr static const size_t kMaxPacketLen = 512;
+    /// Maximum number of retransmissions before giving up
+    constexpr static const size_t kMaxRetransmissions = 3;
 
 public:
     /// question record
@@ -46,8 +48,8 @@ public:
         friend std::ostream& operator<<(std::ostream& output, const Answer&);
 
     private:
-        /// If a PTR record, this is the hostname container within
-        std::string ptrValue;
+        /// If a PTR/CNAME record, this is the label in the payload
+        std::string labelValue;
     };
 
     /// DNS query response
@@ -74,7 +76,7 @@ public:
         /// Bonus records
         std::vector<Answer> additional;
 
-    private:
+//    private:
         /// length of the packet
         size_t packetLen;
         /// Full received packet
