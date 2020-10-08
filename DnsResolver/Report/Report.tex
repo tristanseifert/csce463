@@ -1,0 +1,164 @@
+\documentclass[11pt]{article}
+
+\usepackage[letterpaper, margin=0.74in]{geometry}
+\usepackage{lscape}
+
+\usepackage{graphicx}
+\usepackage{enumitem}
+\usepackage{color,soul}
+\usepackage{amsmath}
+\usepackage{xfrac}
+\usepackage{mathtools}
+
+\usepackage{xcolor}
+\definecolor{aggiemaroon}{RGB}{80,0,0}
+
+\usepackage{listings}
+\usepackage{caption}
+\DeclareCaptionFont{white}{\color{white}}
+\DeclareCaptionFormat{listing}{%
+  \parbox{\textwidth}{\colorbox{gray}{\parbox{\textwidth}{#1#2#3}}\vskip-4pt}}
+\captionsetup[lstlisting]{format=listing,labelfont=white,textfont=white}
+\lstset{frame=lrb,xleftmargin=\fboxsep,xrightmargin=-\fboxsep,basicstyle=\tiny\tt}
+
+\usepackage[mathletters,postscript]{ucs}
+\usepackage[utf8x]{inputenc}
+\usepackage{pmboxdraw}
+
+\usepackage{hyperref}
+\hypersetup{
+    colorlinks,
+    linkcolor=aggiemaroon,
+    linkbordercolor=blue,
+}
+\makeatletter
+\Hy@AtBeginDocument{%
+  \def\@pdfborder{0 0 1}% Overrides border definition set with colorlinks=true
+  \def\@pdfborderstyle{/S/U/W 1}% Overrides border style set with colorlinks=true
+                                % Hyperlink border style will be underline of width 1pt
+}
+\makeatother
+
+\usepackage{tikz}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.16}
+
+\usepackage{graphicx}
+\graphicspath{{images/}}
+
+\begin{document}
+%\newcommand{\answer}[1]{{\bf (Answer: #1)}}
+\newcommand{\answer}[1]{\mbox{~}}
+
+{
+\large  CSCE 463 \hfill Fall 2020\\
+ \begin{center}
+   \textbf{Homework 2 Report} \\
+   Tristan Seifert \\
+    \end{center}
+}
+
+%%%%%%%%
+\section{Questions}
+
+\begin{enumerate}
+
+%%% (1)
+\item {
+\texttt{random0.irl} uses compressed offsets pointing into the fixed header. Responses for \texttt{random3.irl} produce a packet that is too small, e.g. smaller than the fixed header. \texttt{random5.irl} has a \textsc{rr} that contains a jump past the end of the packet. Lastly, \texttt{random6.irl} has an infinite jump loop.
+
+
+\begin{lstlisting}[label=random0-trace,caption=Trace for \textit{random0.irl}]
+Lookup  : random0.irlQuery   : random0.irl, type 1, TXID 0x39ceServer  : 127.0.0.1********************************Attempt 1 with 29 bytes... response in 2 ms with 9 bytesDNS failure: ++ jump into fixed header
+\end{lstlisting}
+
+
+\begin{lstlisting}[label=random3-trace,caption=Trace for \textit{random3.irl}]
+Lookup  : random3.irlQuery   : random3.irl, type 1, TXID 0xeb2eServer  : 127.0.0.1********************************Attempt 1 with 29 bytes... response in 2 ms with 9 bytesDNS failure: ++ response too small
+\end{lstlisting}
+
+
+\begin{lstlisting}[label=random5-trace,caption=Trace for \textit{random5.irl}]
+Lookup  : random5.irlQuery   : random5.irl, type 1, TXID 0xc403Server  : 127.0.0.1********************************Attempt 1 with 29 bytes... response in 2 ms with 71 bytesDNS failure: ++ jump past end of packet
+\end{lstlisting}
+
+
+\begin{lstlisting}[label=random6-trace,caption=Trace for \textit{random6.irl}]
+Lookup  : random6.irlQuery   : random6.irl, type 1, TXID 0xc6c8Server  : 127.0.0.1********************************Attempt 1 with 29 bytes... response in 6 ms with 59 bytesDNS failure: ++ jump loop reconstructing label
+\end{lstlisting}
+}
+
+%%% (2)
+\item {
+On \texttt{random1.irl}, the fixed header indicates that there are far more additional records than space is provided for in the packet.
+
+\begin{lstlisting}[label=random1-trace,caption=Trace for \textit{random1.irl}]
+Lookup  : random1.irlQuery   : random1.irl, type 1, TXID 0xaef0Server  : 127.0.0.1********************************Attempt 1 with 29 bytes... response in 3 ms with 468 bytesDNS failure: ++ not enough records
+\end{lstlisting}
+}
+
+%%% (3)
+\item {
+Responses for \texttt{random7.irl} are truncated right after the first byte of the two byte jump command. 
+
+\begin{lstlisting}[label=random7-trace,caption=Trace for \textit{random7.irl}]
+Lookup  : random7.irlQuery   : random7.irl, type 1, TXID 0x4606Server  : 127.0.0.1********************************Attempt 1 with 29 bytes... response in 3 ms with 468 bytesDNS failure: ++ truncated jump offset
+\end{lstlisting}
+}
+
+%%% (4)
+\item {
+The server chooses randomly whether the response packets from \texttt{random4.irl} have RR value lengths that are too large, jump into the fixed header, or simply truncates the packet in the middle of a name string.
+
+\begin{lstlisting}[label=random4-trace,caption=Traces for \textit{random4.irl}]
+Lookup  : random4.irlQuery   : random4.irl, type 1, TXID 0xfcd4Server  : 127.0.0.1********************************Attempt 1 with 29 bytes... response in 3 ms with 468 bytesDNS failure: ++ unexpected end of packet (name string)
+
+
+Lookup  : random4.irlQuery   : random4.irl, type 1, TXID 0x2d39Server  : 127.0.0.1********************************Attempt 1 with 29 bytes... response in 3 ms with 468 bytesDNS failure: ++ invalid jump offset (into fixed header)
+
+
+Lookup  : random4.irlQuery   : random4.irl, type 1, TXID 0x84cfServer  : 127.0.0.1********************************Attempt 1 with 29 bytes... response in 3 ms with 468 bytesDNS failure: ++ invalid record length
+\end{lstlisting}
+}
+
+%%% (5)
+\item {
+Handling for the \texttt{random8.irl} record implements a specific algorithm, that will overwrite a random part of the packet with repeated instance of the string \texttt{"lol"}. The algorithm uses the system \texttt{rand()} function to get a starting byte offset, as well as to compute how many times the string is repeated: it will always be at least 10 times, but no more than 40.
+
+I determined this by loading the provided \texttt{DNSResponder.exe} binary into Ghidra\footnote{\href{https://ghidra-sre.org}{Ghidra} is a free and open source reverse engineering tool developed by the National Security Agency. It's similar to IDA Pro, which I have some experience in using from years of developing iOS jailbreaks.}, then finding the function responsible for handling the \texttt{random8.irl} record. This was relatively easy, since the compiler generated an easy to recognize jump table for the switch statement that invokes the correct handler, depending on the 0-9/A-B part of the \texttt{randomX.irl} question.
+
+Once the request handler function was found, it was just a matter of following it through to the end to find where the packet is corrupted. Translating the assembly instructions in the executable to pseudocode yields the following:
+
+\begin{lstlisting}[language=c++,label=random8-lol-corruption,caption=Pseudocode of corruption function,keywordstyle=\bfseries\color{green!40!black},commentstyle=\itshape\color{purple!40!black},identifierstyle=\color{blue},stringstyle=\color{orange},]
+// generate some random values for packet corruption time
+temp = rand();
+// starting offset for corruption
+corruptionStart = temp % (packetEnd - 0xC)) + 0xC;
+// derive the number of lols to write: at least 10, no more than 40
+temp = rand();
+numLols = temp % 0x1e + 10;
+
+// ensure we don't write past the end of the packet
+lolEndByte = corruptionStart + numLols * 3;
+if (packetEnd < lolEndByte) {
+  corruptionStart = corruptionStart - (lolEndByte - packetEnd);
+}
+
+// reset the loop counter
+i = 0;
+
+// repeat for number of lols to write
+while (i < numLols) {
+  // copy three bytes of the lol string
+  memcpy((void *)(packet + (i * 3) + corruptionStart), "lol", 3);
+
+  // increment loop counter
+  i = i + 1;
+}
+\end{lstlisting}
+}
+
+\end{enumerate}
+
+\end{document}
+

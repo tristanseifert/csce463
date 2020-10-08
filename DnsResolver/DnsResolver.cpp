@@ -78,11 +78,15 @@ void DnsResolver::resolveDomain(const std::string& name, Response& outResponse, 
 
     closesocket(sock);
 
+    if (responseLen < sizeof(dns_header_t)) {
+        throw std::runtime_error("++ response too small");
+    }
+
     // validate the txid
     auto resHeader = reinterpret_cast<dns_header_t*>(&response);
 
     if (ntohs(resHeader->txid) != htons(questionHeader->txid)) {
-        throw std::runtime_error("txid mismatch");
+        throw std::runtime_error("++ txid mismatch");
     }
 
     // determine if success or not
@@ -100,6 +104,11 @@ void DnsResolver::resolveDomain(const std::string& name, Response& outResponse, 
     outResponse.rcode = rcode;
     outResponse.success = (rcode == kRcodeSuccess);
 
+    // ignore non-success rcodes
+    if (rcode != kRcodeSuccess && rcode != kRcodeNameError && rcode != kRcodeServerError) {
+        throw std::runtime_error("++ invalid rcode");
+    }
+
     // parse the question/answer/authority/bonus sections
     offset = this->readQuestions(response, responseLen, outResponse.questions);
 
@@ -110,6 +119,10 @@ void DnsResolver::resolveDomain(const std::string& name, Response& outResponse, 
         offset = this->readAnswers(response, responseLen, & response[offset], outResponse.authority, resHeader->numNameservers);
     }
     if (offset) {
+        if (offset >= responseLen && resHeader->numAdditionalRsrc) {
+            throw std::runtime_error("header indicates additional records, but no more packet bytes");
+        }
+
         offset = this->readAnswers(response, responseLen, &response[offset], outResponse.additional, resHeader->numAdditionalRsrc);
     }
 }
@@ -193,10 +206,15 @@ void DnsResolver::splitLabel(const std::string& label, std::vector<std::string>&
  * @param name Stream into which label components are inserted sequentially
  * @return Number of bytes read, starting at labelStart, for this label
 */
-size_t DnsResolver::reconstructLabel(void* packet, const size_t packetLen, void* labelStart, std::stringstream& name, bool *done)
+size_t DnsResolver::reconstructLabel(void* packet, const size_t packetLen, void* labelStart, std::stringstream& name, bool *done, size_t depth)
 {
     uint8_t* readPtr = reinterpret_cast<uint8_t*>(labelStart);
     size_t bytesRead = 0;
+
+    // bail if too deep
+    if (depth >= 16) {
+        throw std::runtime_error("++ jump loop reconstructing label");
+    }
 
     // read until we get the null terminator
     while (*readPtr != 0) {
@@ -219,21 +237,29 @@ size_t DnsResolver::reconstructLabel(void* packet, const size_t packetLen, void*
             bool ptrDone = false;
 
             if ((stringBytes & 0b11000000) != 0xc0) {
-                throw std::runtime_error("invalid label length");
+                throw std::runtime_error("++ invalid label length");
+            }
+
+            // make sure there's one more byte
+            if ((readPtr - (uint8_t*)packet) + 1 > packetLen) {
+                throw std::runtime_error("++ unexpected end of packet in compressed value");
             }
 
             // recurse on down
             uint16_t ptr = ((*readPtr++ << 8) | (*readPtr++)) & 0x3FFF;
             auto nextStart = (reinterpret_cast<uint8_t*>(packet) + ptr);
 
+            if (ptr < sizeof(dns_header_t)) {
+                throw std::runtime_error("++ jump into fixed header");
+            }
             if (nextStart == labelStart) {
-                throw std::runtime_error("label jump loop");
+                throw std::runtime_error("++ label jump loop");
             }
             if (ptr > packetLen) {
-                throw std::runtime_error("jump past end of packet");
+                throw std::runtime_error("++ jump past end of packet");
             }
 
-            this->reconstructLabel(packet, packetLen, nextStart, name, &ptrDone);
+            this->reconstructLabel(packet, packetLen, nextStart, name, &ptrDone, (depth + 1));
 
             if (ptrDone) {
                 goto gotFullLabel;
@@ -279,7 +305,7 @@ size_t DnsResolver::readQuestions(void* packet, const size_t packetLen, std::vec
         q.name.pop_back(); // remove trailing dot
 
         if ((readPtr - (uint8_t*) packet) > packetLen) {
-            throw std::runtime_error("unexpected end of packet");
+            throw std::runtime_error("++ unexpected end of packet");
         }
 
         // read the type/result code
@@ -319,10 +345,15 @@ size_t DnsResolver::readAnswers(void* packet, const size_t packetLen, void* star
         readPtr += this->reconstructLabel(packet, packetLen, readPtr, name);
 
         a.name = name.str();
+
+        if (a.name.empty()) {
+            throw std::runtime_error("++ invalid name");
+        }
+
         a.name.pop_back(); // remove trailing dot
 
         if ((readPtr - (uint8_t*)packet) > packetLen) {
-            throw std::runtime_error("unexpected end of packet");
+            throw std::runtime_error("++ unexpected end of packet");
         }
 
         // read the type/result code
@@ -335,7 +366,7 @@ size_t DnsResolver::readAnswers(void* packet, const size_t packetLen, void* star
         readPtr += sizeof(dns_answer_filling_t);
 
         if ((readPtr - (uint8_t*)packet) > packetLen) {
-            throw std::runtime_error("unexpected end of packet");
+            throw std::runtime_error("++ unexpected end of packet");
         }
 
         // lastly, the payload
@@ -351,7 +382,7 @@ size_t DnsResolver::readAnswers(void* packet, const size_t packetLen, void* star
             a.labelValue.pop_back();
         } else {
             if (((uint8_t *)&filling->data - (uint8_t*)packet) + payloadLen > packetLen) {
-                throw std::runtime_error("unexpected end of packet");
+                throw std::runtime_error("++ unexpected end of packet");
             }
 
             memcpy(payload.data(), filling->data, payloadLen);
