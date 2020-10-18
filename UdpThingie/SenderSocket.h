@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <chrono>
 
 /**
  * @brief Implements the fancy schmanzy stuff on top of UDP to go very very fast
@@ -17,6 +18,12 @@ public:
     constexpr static const uint16_t kPortNumber = 22345;
 	/// Maximum packet size
     constexpr static const size_t kMaxPacketSize = (1500 - 28);
+    /// Max number of retransmissions (for connection establishment SYN packets)
+    constexpr static const size_t kMaxRetransmissionsSYN = 3;
+    /// Max number of retransmissions (for all other types of packets)
+    constexpr static const size_t kMaxRetransmissions = 5;
+    /// Default retransmission timeout (in seconds)
+    constexpr static const double kRetransmissionTimeout = 1.0;
 
 public:
     /**
@@ -47,6 +54,8 @@ public:
             kStatusTimeout = 5,
             /// Internal error receiving data
             kStatusRecvFailed = 6,
+            /// Some undefined system error took place
+            kStatusSystemError = 7,
         };
 
         /// Gets the type of exception
@@ -75,11 +84,34 @@ public:
         static const std::unordered_map<Type, std::string> kDefaultMessages;
     };
 
+private:
+    /// Socket used for communicating
+    SOCKET sock = INVALID_SOCKET;
+    /// Destination host
+    struct sockaddr_storage host = { 0 };
+    /// String version of destination host
+    std::string hostStr = "";
+
+    /// if set, we've established a connection before
+    bool isConnected = false;
+    /// time at which the connection was begun to be established
+    std::chrono::steady_clock::time_point startTime;
+    /// current retransmission delay
+    double rtoDelay = kRetransmissionTimeout;
+    /// current sequence number. incremented on every transmission
+    DWORD currentSeq = 0;
+
 public:
+    virtual ~SenderSocket();
+
     void open(const std::string& host, uint16_t port, size_t window, float rtt, float speed, float loss[2]);
     void close();
 
     void send(void* data, size_t length);
+
+private:
+    void setUpSocket(struct sockaddr_storage* addr);
+    void sendPacketRetransmit(void* data, size_t length, size_t numRetrans = kMaxRetransmissions, bool updateRto = false, bool log = false, const std::string& kind = "");
 
 private:
     static void resolve(const std::string &host, struct sockaddr_storage* outAddr);

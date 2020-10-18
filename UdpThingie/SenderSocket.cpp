@@ -1,9 +1,27 @@
 #include "pch.h"
 #include "SenderSocket.h"
+#include "PacketTypes.h"
 
+#include <cassert>
 #include <string>
 #include <sstream>
 #include <unordered_map>
+#include <chrono>
+#include <iostream>
+#include <iomanip>
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+/**
+ * Clean up any dangling resources.
+ */
+SenderSocket::~SenderSocket()
+{
+    // close socket if still open
+    if (this->sock != INVALID_SOCKET) {
+        closesocket(this->sock);
+        this->sock = INVALID_SOCKET;
+    }
+}
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 /**
@@ -11,15 +29,45 @@
  */
 void SenderSocket::open(const std::string& host, uint16_t port, size_t window, float rtt, float speed, float loss[2])
 {
-    int err;
+    // sanity checking
+    if (this->isConnected) {
+        throw SocketError(SocketError::kStatusConnected);
+    }
 
-    // resolve address
+    // resolve address and establish the socket
     struct sockaddr_storage storage;
     memset(&storage, 0, sizeof(struct sockaddr_storage));
 
     SenderSocket::resolve(host, &storage);
 
-    // send the SYN packet
+    struct sockaddr_in* addr = (struct sockaddr_in*) &storage;
+    addr->sin_port = htons(port);
+
+    this->setUpSocket(&storage);
+    this->hostStr = host;
+
+    // build SYN packet
+    SenderSynPacket syn;
+    memset(&syn, 0, sizeof(SenderSynPacket));
+
+    syn.header.flags.magic = kFlagsMagic;
+    syn.header.flags.syn = 1;
+
+    syn.lp.bufferSize = (DWORD) (window + kMaxRetransmissions); // W+R
+    syn.lp.RTT = rtt;
+    syn.lp.speed = speed;
+    syn.lp.pLoss[0] = loss[0];
+    syn.lp.pLoss[1] = loss[1];
+
+    // prepare internal state, then send the SYN packet
+    this->currentSeq = 0;
+    this->startTime = std::chrono::steady_clock::now();
+    this->rtoDelay = kRetransmissionTimeout;
+
+    this->sendPacketRetransmit(&syn, sizeof(SenderSynPacket), kMaxRetransmissionsSYN, true, true, "SYN");
+
+    // if we get here, the connection was successful
+    this->isConnected = true;
 }
 
 /**
@@ -27,7 +75,27 @@ void SenderSocket::open(const std::string& host, uint16_t port, size_t window, f
 */
 void SenderSocket::close()
 {
-    // TODO: implement
+    if (!this->isConnected) {
+        throw SocketError(SocketError::kStatusNotConnected);
+    }
+
+    // build FIN packet
+    SenderPacketHeader fin;
+    memset(&fin, 0, sizeof(SenderPacketHeader));
+
+    fin.flags.magic = kFlagsMagic;
+    fin.flags.fin = 1;
+
+    // send it
+    this->sendPacketRetransmit(&fin, sizeof(SenderPacketHeader), kMaxRetransmissions, false, true, "FIN");
+
+    // actually close the socket
+    if (this->sock != INVALID_SOCKET) {
+        closesocket(this->sock);
+        this->sock = INVALID_SOCKET;
+    }
+
+    this->isConnected = false;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -36,7 +104,147 @@ void SenderSocket::close()
  */
 void SenderSocket::send(void* data, size_t length)
 {
+    if (!this->isConnected) {
+        throw SocketError(SocketError::kStatusNotConnected);
+    }
+
     // TODO: implement
+}
+
+/**
+ * @brief Sets up the UDP socket and connects it.
+*/
+void SenderSocket::setUpSocket(struct sockaddr_storage *addr)
+{
+    int err;
+
+    // create the socket
+    SOCKET sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock == -1) {
+        throw SocketError(SocketError::kStatusSystemError, WSAGetLastError());
+    }
+
+    // bind it to any local address
+    struct sockaddr_in local = { 0 };
+    local.sin_family = AF_INET;
+    local.sin_addr.s_addr = INADDR_ANY;
+    local.sin_port = htons(0);
+
+    err = bind(sock, (struct sockaddr*)&local, sizeof(local));
+    if (err == -1) {
+        throw SocketError(SocketError::kStatusSystemError, WSAGetLastError());
+    }
+
+    // socket is good
+    this->sock = sock;
+    this->host = *addr;
+}
+
+/**
+ * @brief Implements the raw transmit logic that will retransmit a packet a given number of times
+ * before giving up.
+ * 
+ * @param data Packet to send (including header)
+ * @param length Length of packet, in bytes
+ * @param attempts Number of times to re-try transmitting the packet
+ * @param updateRto If the round-trip delay should be updated
+ * @param log If true, some detailed info is logged to the console
+*/
+void SenderSocket::sendPacketRetransmit(void* data, size_t length, size_t attempts, bool updateRto, bool log, const std::string &kind)
+{
+    int err;
+    double rto = 0;
+
+    // fixed timeout value (for retransmission)
+    struct timeval timeout = { 0 };
+    timeout.tv_sec = (int) this->rtoDelay;
+    timeout.tv_usec = (int) ((this->rtoDelay - ((int64_t)this->rtoDelay)) * 1000 * 1000);
+
+//    std::cout << "sec " << timeout.tv_sec << " usec " << timeout.tv_usec << "; " << this->rtoDelay << std::endl;
+
+    // receive buffer for ack (and where it came from)
+    static const size_t kReceiveSz = kMaxPacketSize;
+    char receive[kReceiveSz] = { 0 };
+    ReceiverPacketHeader* rxHdr = reinterpret_cast<ReceiverPacketHeader*>(receive);
+
+    struct sockaddr_storage respFrom;
+    socklen_t respFromLen = sizeof(struct sockaddr_storage);
+
+    // fill in outgoing sequence number
+    SenderPacketHeader* hdr = reinterpret_cast<SenderPacketHeader*>(data);
+    hdr->seq = this->currentSeq;
+
+    // retransmit the max amount allowed
+    for (size_t i = 0; i < attempts; i++) {
+        auto sentAt = std::chrono::steady_clock::now();
+
+        // send the packet
+        err = sendto(this->sock, (const char*)data, (int)length, 0, (struct sockaddr*)&this->host,
+            sizeof(struct sockaddr_in));
+        if (err == -1) {
+            throw SocketError(SocketError::kStatusSendFailed, WSAGetLastError());
+        }
+
+        if (log) {
+            auto nowTs = std::chrono::steady_clock::now();
+            double now = std::chrono::duration_cast<std::chrono::milliseconds>(nowTs - this->startTime).count() / 1000.f;
+
+            std::cout << "[" << std::fixed << std::setprecision(3) << std::setw(6) << now << "] --> " 
+                      << kind << ' ' << hdr->seq << " (attempt " << (i + 1) << " of " 
+                      << attempts << ", RTO " << this->rtoDelay << ")" << " to " 
+                      << this->hostStr << std::endl;
+        }
+
+        // wait for activity on the socket
+        fd_set set;
+        FD_ZERO(&set);
+        FD_SET(this->sock, &set);
+
+        err = select(0, &set, nullptr, nullptr, &timeout);
+        if (err == -1) {
+            throw SocketError(SocketError::kStatusSystemError, WSAGetLastError());
+        }
+        // handle timeouts
+        if (err == 0) {
+            continue;
+        }
+
+        // receive a response
+        err = recvfrom(this->sock, receive, kReceiveSz, 0, (struct sockaddr*)&respFrom, &respFromLen);
+        if (err == -1) {
+            throw SocketError(SocketError::kStatusRecvFailed, WSAGetLastError());
+        }
+        assert(err >= sizeof(ReceiverPacketHeader));
+
+        // calculate round-trip time for this packet
+        auto receivedAt = std::chrono::steady_clock::now();
+        rto = (std::chrono::duration_cast<std::chrono::milliseconds>(receivedAt - sentAt).count() / 1000.f);
+
+        goto success;
+    }
+
+    // if we get here, max number of retransmissions exhausted
+    throw SocketError(SocketError::kStatusTimeout);
+    
+success:;
+    // on successful transmission, increment the sequence counter and update delay
+//    this->currentSeq++;
+
+    // print how long this song and dance took
+    auto nowTs = std::chrono::steady_clock::now();
+    double now = std::chrono::duration_cast<std::chrono::milliseconds>(nowTs - this->startTime).count() / 1000.f;
+
+    if (log) {
+        std::cout << "[" << std::fixed << std::setprecision(3) << std::setw(6) << now << "] <-- "
+                  << kind << ((rxHdr->flags.ack) ? "-ACK" : "") << " window " << rxHdr->receiveWindow;
+    }
+    if (updateRto) {
+        rto *= 3.f;
+
+        std::cout << "; setting initial RTO to " << rto;
+        this->rtoDelay = rto;
+    }
+    std::cout << std::endl;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////

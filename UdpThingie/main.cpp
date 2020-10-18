@@ -4,6 +4,8 @@
 
 #include <string>
 #include <iostream>
+#include <algorithm>
+#include <chrono>
 
 #ifdef _WIN32
 // what the hell are they smoking at microsoft to come up with this bullshit
@@ -33,7 +35,7 @@ static void WinbowlsInit()
 */
 int main(int argc, const char **argv)
 {
-    size_t power, senderWindow, bufSize;
+    size_t power, senderWindow, bufSize, bufSizeBytes;
     float rtt, loss[2], speed;
 
     // platform init
@@ -60,6 +62,7 @@ int main(int argc, const char **argv)
         goto printUsage;
     }
     bufSize = (size_t) std::pow(2, power);
+    bufSizeBytes = bufSize * sizeof(DWORD);
 
     senderWindow = std::atoi(argv[3]);
     if (senderWindow <= 0) {
@@ -92,18 +95,57 @@ int main(int argc, const char **argv)
         goto printUsage;
     }
 
+    // print the info
+    std::cout << "Main:\tsender W = " << senderWindow << ", RTT " << rtt << " sec, loss "
+              << loss[0] << " / " << loss[1] << ", link " << (speed / 1e6) << " Mbps" << std::endl;
+
+    // allocate the buffer
+    std::cout << "Main:\tinitializing DWORD array with 2^" << power << " elements...";
+    auto bufFillStart = std::chrono::steady_clock::now();
+
+    DWORD* buf = new DWORD[bufSize];
+    for (size_t i = 0; i < bufSize; i++) {
+        buf[i] = (DWORD) i;
+    }
+
+    auto bufFillEnd = std::chrono::steady_clock::now();
+    std::cout << " done in "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(bufFillEnd - bufFillStart).count()
+              << " ms" << std::endl;
+
     // everything appears to be in order here
     SenderSocket sock;
     try {
         // connect socket
+        auto connectStart = std::chrono::steady_clock::now();
         sock.open(serverAddr, SenderSocket::kPortNumber, senderWindow, rtt, speed, loss);
+        auto connectEnd = std::chrono::steady_clock::now();
 
-        // TODO: send loop
+        std::cout << "Main:\tConnected to " << serverAddr << " in "
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(connectEnd - connectStart).count() / 1000.f
+                  << " sec. Packet size is " << SenderSocket::kMaxPacketSize << " bytes" << std::endl;
+
+        // repeatedly send
+        size_t off = 0;
+        while (off < bufSizeBytes) {
+            size_t numBytes = min(bufSizeBytes - off, SenderSocket::kMaxPacketSize - sizeof(SenderPacketHeader));
+            sock.send(((uint8_t *) buf) + off, numBytes);
+            off += numBytes;
+        }
+        auto sendEnd = std::chrono::steady_clock::now();
 
         // done
         sock.close();
+
+        auto connectionEnd = std::chrono::steady_clock::now();
+        std::cout << "Main:\tTransfer finished in "
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(connectionEnd - bufFillEnd).count() / 1000.f
+                  << " sec" << std::endl;
     } catch(SenderSocket::SocketError &e) {
-        std::cerr << "Socket error: " << e.what() << std::endl;
+        std::cerr << "Socket error " << e.getType() << ": " << e.what() << std::endl;
         return -1;
     }
+
+    // clean up
+    delete[] buf;
 }
