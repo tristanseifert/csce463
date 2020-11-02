@@ -1,9 +1,11 @@
 #include "pch.h"
 #include "SenderSocket.h"
 #include "PacketTypes.h"
+#include "Checksum.h"
 
 #include <string>
 #include <iostream>
+#include <iomanip>
 #include <algorithm>
 #include <chrono>
 
@@ -37,6 +39,7 @@ int main(int argc, const char **argv)
 {
     size_t power, senderWindow, bufSize, bufSizeBytes;
     float rtt, loss[2], speed;
+    Checksum cs;
 
     // platform init
 #ifdef _WIN32
@@ -137,10 +140,14 @@ int main(int argc, const char **argv)
         // done
         sock.close();
 
+        uint32_t check = cs.crc32(buf, bufSizeBytes);
+
         auto connectionEnd = std::chrono::steady_clock::now();
         std::cout << "Main:\tTransfer finished in "
-                  << std::chrono::duration_cast<std::chrono::milliseconds>(connectionEnd - bufFillEnd).count() / 1000.f
-                  << " sec" << std::endl;
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(connectionEnd - sock.getSynAckTime()).count() / 1000.f
+                  << " sec" << ", ??? Kbps, checksum " << std::hex << std::setw(8) 
+                  << std::setfill('0') << check <<  std::endl;
+
     } catch(SenderSocket::SocketError &e) {
         std::cerr << "Socket error " << e.getType() << ": " << e.what() << std::endl;
         return -1;

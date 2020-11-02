@@ -147,10 +147,12 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="Checksum.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="SenderSocket.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="Checksum.h" />
     <ClInclude Include="PacketTypes.h" />
     <ClInclude Include="pch.h" />
     <ClInclude Include="SenderSocket.h" />

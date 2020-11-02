@@ -10,17 +10,39 @@
 #include <iostream>
 #include <iomanip>
 
+using namespace __fucker;
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////
+SenderSocket::SenderSocket()
+{
+    this->setUpStatsThread();
+    this->constructTime = std::chrono::steady_clock::now();
+}
+
 /**
  * Clean up any dangling resources.
  */
-SenderSocket::~SenderSocket()
+SenderSocket::~SenderSocket() noexcept(false)
 {
+    // tell the stats thread to go commit sudoku
+    if (!SetEvent(this->quitEvent)) {
+        std::string msg = "SetEvent(): " + GetLastError();
+        throw std::runtime_error(msg);
+    }
+
     // close socket if still open
     if (this->sock != INVALID_SOCKET) {
         closesocket(this->sock);
         this->sock = INVALID_SOCKET;
     }
+
+    // wait for the stats thread to actually die
+    WaitForSingleObject(this->statsThread, 500);
+    CloseHandle(this->statsThread);
+    this->statsThread = INVALID_HANDLE_VALUE;
+
+    CloseHandle(this->quitEvent);
+    this->quitEvent = INVALID_HANDLE_VALUE;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -64,10 +86,14 @@ void SenderSocket::open(const std::string& host, uint16_t port, size_t window, f
     this->startTime = std::chrono::steady_clock::now();
     this->rtoDelay = kRetransmissionTimeout;
 
-    this->sendPacketRetransmit(&syn, sizeof(SenderSynPacket), kMaxRetransmissionsSYN, true, true, "SYN");
+    this->sendPacketRetransmit(&syn, sizeof(SenderSynPacket), kMaxRetransmissionsSYN, true, false, "SYN");
 
     // if we get here, the connection was successful
+    this->synAckTime = std::chrono::steady_clock::now();
     this->isConnected = true;
+
+    // begin executing the stats thread
+    ResumeThread(this->statsThread);
 }
 
 /**
@@ -135,6 +161,19 @@ void SenderSocket::setUpSocket(struct sockaddr_storage *addr)
         throw SocketError(SocketError::kStatusSystemError, WSAGetLastError());
     }
 
+    // increase the receive/transmit buffer sizes
+    const int kRxBufSz = (20 * 1000 * 1000), kTxBufSz = (20 * 1000 * 1000);
+
+    err = setsockopt(sock, SOL_SOCKET, SO_RCVBUF, (const char *) &kRxBufSz, sizeof(int));
+    if (err == SOCKET_ERROR) {
+        throw SocketError(SocketError::kStatusSystemError, WSAGetLastError());
+    }
+
+    err = setsockopt(sock, SOL_SOCKET, SO_SNDBUF, (const char*) &kTxBufSz, sizeof(int));
+    if (err == SOCKET_ERROR) {
+        throw SocketError(SocketError::kStatusSystemError, WSAGetLastError());
+    }
+
     // socket is good
     this->sock = sock;
     this->host = *addr;
@@ -185,7 +224,7 @@ void SenderSocket::sendPacketRetransmit(void* data, size_t length, size_t attemp
             throw SocketError(SocketError::kStatusSendFailed, WSAGetLastError());
         }
 
-        if (log) {
+        if (log && this->debug) {
             auto nowTs = std::chrono::steady_clock::now();
             double now = std::chrono::duration_cast<std::chrono::milliseconds>(nowTs - this->startTime).count() / 1000.f;
 
@@ -236,15 +275,20 @@ success:;
 
     if (log) {
         std::cout << "[" << std::fixed << std::setprecision(3) << std::setw(6) << now << "] <-- "
-                  << kind << ((rxHdr->flags.ack) ? "-ACK" : "") << " window " << rxHdr->receiveWindow;
+                  << kind << ((rxHdr->flags.ack) ? "-ACK " : " ") << rxHdr->ackSeq << " window "
+                  << std::hex << std::setw(8) << std::setfill('0') << rxHdr->receiveWindow;
     }
     if (updateRto) {
         rto *= 3.f;
 
-        std::cout << "; setting initial RTO to " << rto;
+        if (log) {
+            std::cout << "; setting initial RTO to " << rto;
+        }
         this->rtoDelay = rto;
     }
-    std::cout << std::endl;
+    if (log) {
+        std::cout << std::endl;
+    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -303,6 +347,91 @@ beach:;
     freeaddrinfo(result);
 }
 
+///////////////////////////////////////////////////////////////////////////////////////////////////
+/**
+ * @brief Trampoline to jump into the class main method
+ * @param ctx Context passed to thread creation
+*/
+DWORD WINAPI __fucker::StatsThreadEntry(LPVOID ctx)
+{
+    static_cast<SenderSocket*>(ctx)->statsThreadMain();
+    return 0;
+}
+
+/**
+ * @brief Initializes the stats thread.
+*/
+void SenderSocket::setUpStatsThread()
+{
+    using namespace __fucker;
+
+    // set up the quit event
+    this->quitEvent = CreateEvent(nullptr, false, false, L"StatsThreadQuit");
+    if (this->quitEvent == (HANDLE)ERROR_INVALID_HANDLE) {
+        std::string msg = "CreateEvent(): " + GetLastError();
+        throw std::runtime_error(msg);
+    }
+
+    // set up thread
+    this->statsThread = CreateThread(nullptr, kStackSize, StatsThreadEntry, this, CREATE_SUSPENDED, nullptr);
+    assert(this->statsThread);
+
+    SetThreadPriority(this->statsThread, THREAD_PRIORITY_ABOVE_NORMAL);
+}
+
+/**
+ * @brief Main loop for the stats thread
+*/
+void SenderSocket::statsThreadMain()
+{
+    using namespace std::chrono;
+    // wait on the quit event
+    while (WaitForSingleObject(this->quitEvent, 2000) == WAIT_TIMEOUT) {
+        // lol
+        this->statsThreadPrint(std::cout);
+    }
+
+    // clean up
+    std::cout << std::endl << std::flush;
+}
+
+/**
+ * @brief Prints a single stats line to the given stream.
+ * @param out Stream to receive stats text
+*/
+void SenderSocket::statsThreadPrint(std::ostream& out, bool newline)
+{
+    // seconds since constructyboi
+    auto now = std::chrono::steady_clock::now();
+    auto secs = std::chrono::duration_cast<std::chrono::seconds>(now - this->constructTime).count();
+
+    out << "[" << std::setw(2) << secs << "] ";
+
+    // sender base and mbytes acked
+    double mbAcked = 0;
+    out << "B " << std::setw(6) << this->stats.senderBase << " (" << std::setw(6) << mbAcked
+        << " MB) ";
+
+    // next sequence number
+    out << "N " << std::setw(6) << this->stats.nextSeq << ' ';
+
+    // timeout/fast retransmit/effective window size
+    out << "T " << std::setw(2) << this->stats.timeout << ' '
+        << "F " << std::setw(2) << this->stats.fastReTx << ' '
+        << "W " << std::setw(2) << this->stats.effectiveWindow << ' ';
+
+    // goodput and RTT
+    double goodput = ((double)this->stats.goodput) / 1000.f / 1000.f;
+    double rtt = ((double)this->stats.estimatedRtt) / 1000.f;
+
+    out << "S " << std::setw(6) << goodput << " Mbps "
+        << " RTT " << std::setw(5) << std::fixed << std::setprecision(3) << rtt;
+
+    // lastly, newline if requested
+    if (newline) {
+        out << std::endl;
+    }
+}
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 /// Default descriptive texts for each of the error codes
