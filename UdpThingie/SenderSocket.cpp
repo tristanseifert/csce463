@@ -9,6 +9,7 @@
 #include <chrono>
 #include <iostream>
 #include <iomanip>
+#include <algorithm>
 
 using namespace __fucker;
 
@@ -84,9 +85,9 @@ void SenderSocket::open(const std::string& host, uint16_t port, size_t window, f
     // prepare internal state, then send the SYN packet
     this->currentSeq = 0;
     this->startTime = std::chrono::steady_clock::now();
-    this->rtoDelay = kRetransmissionTimeout;
+    this->rtoDelay = max(kRetransmissionTimeout, (2 * rtt));
 
-    this->sendPacketRetransmit(&syn, sizeof(SenderSynPacket), kMaxRetransmissionsSYN, true, false, "SYN");
+    this->sendPacketRetransmit(&syn, sizeof(SenderSynPacket), kMaxRetransmissionsSYN, true, true, "SYN");
 
     // if we get here, the connection was successful
     this->synAckTime = std::chrono::steady_clock::now();
@@ -98,6 +99,9 @@ void SenderSocket::open(const std::string& host, uint16_t port, size_t window, f
 
 /**
  * @brief Closes the connection. A FIN packet is sent before the socket is closed.
+ * 
+ * This does NOT wait for any outstanding ACKs to be received. This is safe because the send()
+ * method will not return until it has received an ACK for the packet it sent.
 */
 void SenderSocket::close()
 {
@@ -130,11 +134,143 @@ void SenderSocket::close()
  */
 void SenderSocket::send(void* data, size_t length)
 {
+    int err;
+    double sampleRtt = 0;
+    
+    /// number of times we've tried to send the packet (and failed)
+    size_t attempts = 0;
+    const size_t kMaxAttempts = 5;
+
+    // sanity checquing
     if (!this->isConnected) {
         throw SocketError(SocketError::kStatusNotConnected);
     }
+    if (length > (kMaxPacketSize - sizeof(SenderDataPacket))) {
+        throw std::invalid_argument("Length exceeds max payload size");
+    }
 
-    // TODO: implement
+    // fixed timeout value (for fast retransmission)
+    struct timeval timeout = { 0 };
+    timeout.tv_sec = (int)this->rtoDelay;
+    timeout.tv_usec = (int)((this->rtoDelay - ((int64_t)this->rtoDelay)) * 1000 * 1000);
+
+    // receive buffer for ack (and where it came from)
+    static const size_t kReceiveSz = kMaxPacketSize;
+    char receive[kReceiveSz] = { 0 };
+    ReceiverPacketHeader* rxHdr = reinterpret_cast<ReceiverPacketHeader*>(receive);
+
+    struct sockaddr_storage respFrom;
+    socklen_t respFromLen = sizeof(struct sockaddr_storage);
+
+    // build the packet
+    char buf[kMaxPacketSize];
+    memset(&buf, 0, kMaxPacketSize);
+
+    size_t usedPacketLen = (sizeof(SenderPacketHeader) + length);
+
+    auto packet = reinterpret_cast<SenderDataPacket*>(buf);
+    packet->header.flags.magic = kFlagsMagic;
+    packet->header.seq = this->currentSeq;
+
+    if (this->debug) {
+        std::cout << "\tTX: seq " << this->currentSeq << std::endl;
+    }
+
+    memcpy(packet->data, data, length);
+
+retransmit:;
+    // transmit the packet
+    auto sentAt = std::chrono::steady_clock::now();
+
+    err = sendto(this->sock, (const char*)buf, (int) usedPacketLen, 0, 
+                 (struct sockaddr*)&this->host, sizeof(struct sockaddr_in));
+    if (err == -1) {
+        throw SocketError(SocketError::kStatusSendFailed, WSAGetLastError());
+    }
+    this->stats.totalBytesSent += usedPacketLen;
+
+awaitAck:;
+    // set the timer for fast retransmission
+    timeout.tv_sec = (int)this->rtoDelay;
+    timeout.tv_usec = (int)((this->rtoDelay - ((int64_t)this->rtoDelay)) * 1000 * 1000);
+
+    // wait for a reply on the socket (e.g. ack)
+    fd_set set;
+    FD_ZERO(&set);
+    FD_SET(this->sock, &set);
+
+    err = select(0, &set, nullptr, nullptr, &timeout);
+    if (err == -1) {
+        throw SocketError(SocketError::kStatusSystemError, WSAGetLastError());
+    }
+    if (err == 0) {
+        // wait timed out, so retransmit the packet
+        if (++attempts >= kMaxAttempts) {
+            throw SocketError(SocketError::kStatusSendFailed, "Number of retransmissions exceeded");
+        }
+
+        if (this->debug) {
+            std::cout << "\tTX: retx seq " << this->currentSeq << ", attempt " << attempts 
+                      << std::endl;
+        }
+
+        this->stats.timeout++;
+        goto retransmit;
+    }
+
+    // receive a response
+    err = recvfrom(this->sock, receive, kReceiveSz, 0, (struct sockaddr*)&respFrom, &respFromLen);
+    if (err == -1) {
+        throw SocketError(SocketError::kStatusRecvFailed, WSAGetLastError());
+    }
+    assert(err >= sizeof(ReceiverPacketHeader));
+
+    // packet was an acknowledgement
+    if (rxHdr->flags.ack) {
+        if (this->debug) {
+            std::cout << "\tTX: received ack for seq " << rxHdr->ackSeq << ", window " 
+                      << rxHdr->receiveWindow << std::endl;
+        }
+
+        // if unexpected sequence number, wait to receive again
+        if (this->currentSeq != (rxHdr->ackSeq - 1)) {
+            if (this->debug) {
+                std::cout << "\tTX: unexpected seq " << rxHdr->ackSeq << "; expected " 
+                          << this->currentSeq + 1 << std::endl;
+            }
+            goto awaitAck;
+        }
+        
+        // calculate actual round trip time
+        auto receivedAt = std::chrono::steady_clock::now();
+        this->dataAckTime = receivedAt;
+
+        sampleRtt = (std::chrono::duration_cast<std::chrono::milliseconds>(receivedAt - sentAt).count() / 1000.f);
+
+        // update estimated RTT
+        if (this->estimatedRttLast <= 0) {
+            this->estimatedRttLast = sampleRtt;
+        } else {
+            this->estimatedRttLast = this->estimatedRtt;
+        }
+        this->estimatedRtt = ((1.f - kRttAlpha) * this->estimatedRttLast) + (kRttAlpha * sampleRtt);
+
+        // update RTT deviation
+        if (this->devRttLast <= 0) {
+            this->devRttLast = 0;
+        } else {
+            this->devRttLast = this->devRtt;
+        }
+
+        this->devRtt = ((1 - kRttBeta) * this->devRttLast) + 
+                       (kRttBeta * fabs(sampleRtt - this->estimatedRtt));
+
+        this->rtoDelay = this->estimatedRtt + (4 * this->devRtt);
+
+        // ack was valid
+        this->stats.payloadBytesAcked += length;
+        this->currentSeq++;
+    }
 }
 
 /**
@@ -199,8 +335,6 @@ void SenderSocket::sendPacketRetransmit(void* data, size_t length, size_t attemp
     timeout.tv_sec = (int) this->rtoDelay;
     timeout.tv_usec = (int) ((this->rtoDelay - ((int64_t)this->rtoDelay)) * 1000 * 1000);
 
-//    std::cout << "sec " << timeout.tv_sec << " usec " << timeout.tv_usec << "; " << this->rtoDelay << std::endl;
-
     // receive buffer for ack (and where it came from)
     static const size_t kReceiveSz = kMaxPacketSize;
     char receive[kReceiveSz] = { 0 };
@@ -223,6 +357,7 @@ void SenderSocket::sendPacketRetransmit(void* data, size_t length, size_t attemp
         if (err == -1) {
             throw SocketError(SocketError::kStatusSendFailed, WSAGetLastError());
         }
+        this->stats.totalBytesSent += length;
 
         if (log && this->debug) {
             auto nowTs = std::chrono::steady_clock::now();
@@ -276,7 +411,7 @@ success:;
     if (log) {
         std::cout << "[" << std::fixed << std::setprecision(3) << std::setw(6) << now << "] <-- "
                   << kind << ((rxHdr->flags.ack) ? "-ACK " : " ") << rxHdr->ackSeq << " window "
-                  << std::hex << std::setw(8) << std::setfill('0') << rxHdr->receiveWindow;
+                  << std::hex << std::setw(8) << std::setfill('0') << rxHdr->receiveWindow << std::dec << std::setfill(' ');
     }
     if (updateRto) {
         rto *= 3.f;
@@ -384,7 +519,9 @@ void SenderSocket::setUpStatsThread()
 */
 void SenderSocket::statsThreadMain()
 {
-    using namespace std::chrono;
+    // prepare stats structures
+    this->stats.lastPrint = std::chrono::steady_clock::now();
+
     // wait on the quit event
     while (WaitForSingleObject(this->quitEvent, 2000) == WAIT_TIMEOUT) {
         // lol
@@ -401,19 +538,27 @@ void SenderSocket::statsThreadMain()
 */
 void SenderSocket::statsThreadPrint(std::ostream& out, bool newline)
 {
+    using namespace std::chrono;
+
+    auto now = steady_clock::now();
+
+    // seconds since the last stats computation
+    auto secsSinceLastStats = duration_cast<microseconds>(now - this->stats.lastPrint).count() / 1000.f / 1000.f;
+    this->stats.lastPrint = now;
+
     // seconds since constructyboi
-    auto now = std::chrono::steady_clock::now();
-    auto secs = std::chrono::duration_cast<std::chrono::seconds>(now - this->constructTime).count();
+    auto secs = duration_cast<seconds>(now - this->constructTime).count();
 
     out << "[" << std::setw(2) << secs << "] ";
 
     // sender base and mbytes acked
-    double mbAcked = 0;
-    out << "B " << std::setw(6) << this->stats.senderBase << " (" << std::setw(6) << mbAcked
+    size_t bytesAcked = this->currentSeq * kMaxPacketSize;
+    double mbAcked = ((double)bytesAcked) / 1000.f / 1000.f;
+    out << "B " << std::setw(6) << this->currentSeq << " (" << std::setw(6) << mbAcked
         << " MB) ";
 
     // next sequence number
-    out << "N " << std::setw(6) << this->stats.nextSeq << ' ';
+    out << "N " << std::setw(6) << (this->currentSeq + 1) << ' ';
 
     // timeout/fast retransmit/effective window size
     out << "T " << std::setw(2) << this->stats.timeout << ' '
@@ -421,11 +566,14 @@ void SenderSocket::statsThreadPrint(std::ostream& out, bool newline)
         << "W " << std::setw(2) << this->stats.effectiveWindow << ' ';
 
     // goodput and RTT
-    double goodput = ((double)this->stats.goodput) / 1000.f / 1000.f;
-    double rtt = ((double)this->stats.estimatedRtt) / 1000.f;
+    size_t acked = this->stats.payloadBytesAcked;
+    size_t bytesDiff = acked - this->stats.bytesConsumed;
+    this->stats.bytesConsumed = acked;
+
+    double goodput = ((double)bytesDiff * 8) / 1000.f / 1000.f / secsSinceLastStats;
 
     out << "S " << std::setw(6) << goodput << " Mbps "
-        << " RTT " << std::setw(5) << std::fixed << std::setprecision(3) << rtt;
+        << " RTT " << std::setw(5) << std::fixed << std::setprecision(3) << this->estimatedRtt;
 
     // lastly, newline if requested
     if (newline) {

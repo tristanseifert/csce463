@@ -33,6 +33,10 @@ public:
     constexpr static const size_t kMaxRetransmissions = 5;
     /// Default retransmission timeout (in seconds)
     constexpr static const double kRetransmissionTimeout = 1.0;
+    /// Weight of estimated RTT (alpha)
+    constexpr static const double kRttAlpha = 0.125;
+    /// Estimated difference between SampleRTT/EstimatedRTT (beta)
+    constexpr static const double kRttBeta = 0.25;
 
 public:
     /**
@@ -106,6 +110,29 @@ public:
         return this->synAckTime;
     }
 
+    /// Returns the time at which the most recent ACK for a data packet was received
+    std::chrono::steady_clock::time_point getDataAckTime() const
+    {
+        return this->dataAckTime;
+    }
+
+    /// Returns the currently estimated RTT
+    double getEstimatedRtt() const
+    {
+        return this->estimatedRtt;
+    }
+
+    /// Total number of acknowledged bytes
+    size_t getBytesSent() const
+    {
+        return this->stats.totalBytesSent;
+    }
+    /// Total number of acknowledged payload bytes
+    size_t getAckedPayloadBytes() const
+    {
+        return this->stats.payloadBytesAcked;
+    }
+
 private:
     /// size of the stats thread stack, in bytes
     constexpr static const size_t kStackSize = (1024 * 128);
@@ -126,11 +153,22 @@ private:
     std::chrono::steady_clock::time_point synAckTime;
     /// time the constructor was called
     std::chrono::steady_clock::time_point constructTime;
+    /// when the most recent ACK for a data payload packet was received
+    std::chrono::steady_clock::time_point dataAckTime;
 
     /// current retransmission delay
     double rtoDelay = kRetransmissionTimeout;
     /// current sequence number. incremented on every transmission
     DWORD currentSeq = 0;
+
+    /// RTT deviation
+    double devRtt = 0;
+    /// RTT deviation (previous value)
+    double devRttLast = -1;
+    /// Estimated RTT
+    double estimatedRtt = 0;
+    /// Estimated RTT (previous value)
+    double estimatedRttLast = -1;
 
     /// When set, debug logging is on.
     bool debug = false;
@@ -154,10 +192,16 @@ private:
         std::atomic_ulong fastReTx = 0;
         /// effective window size
         std::atomic_ulong effectiveWindow = 1;
-        /// goodput (bytes/sec)
-        std::atomic_ulong goodput = 0;
-        /// estimated RTT (in msec)
-        std::atomic_ulong estimatedRtt = 0;
+
+        /// number of bytes sent (including headers)
+        std::atomic_ulong totalBytesSent = 0;
+        /// number of payload bytes acked (total)
+        std::atomic_ulong payloadBytesAcked = 0;
+        /// last number of bytes acked
+        std::atomic_ulong bytesConsumed = 0;
+
+        /// last time stats were printed
+        std::chrono::steady_clock::time_point lastPrint;
     } stats;
 
 public:

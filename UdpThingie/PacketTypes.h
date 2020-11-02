@@ -74,6 +74,16 @@ struct SenderSynPacket {
     LinkProperties lp;
 };
 
+/**
+ * @brief Packet containing payload data
+*/
+struct SenderDataPacket {
+    /// packet header
+    SenderPacketHeader header;
+    /// payload
+    char data[];
+};
+
 // this is stupid
 #pragma pack(pop)
 

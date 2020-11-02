@@ -129,6 +129,8 @@ int main(int argc, const char **argv)
                   << " sec. Packet size is " << SenderSocket::kMaxPacketSize << " bytes" << std::endl;
 
         // repeatedly send
+        auto sendStartTime = std::chrono::steady_clock::now();
+
         size_t off = 0;
         while (off < bufSizeBytes) {
             size_t numBytes = min(bufSizeBytes - off, SenderSocket::kMaxPacketSize - sizeof(SenderPacketHeader));
@@ -141,13 +143,19 @@ int main(int argc, const char **argv)
         sock.close();
 
         uint32_t check = cs.crc32(buf, bufSizeBytes);
+        auto now = std::chrono::steady_clock::now();
 
-        auto connectionEnd = std::chrono::steady_clock::now();
-        std::cout << "Main:\tTransfer finished in "
-                  << std::chrono::duration_cast<std::chrono::milliseconds>(connectionEnd - sock.getSynAckTime()).count() / 1000.f
-                  << " sec" << ", ??? Kbps, checksum " << std::hex << std::setw(8) 
+        double transferLenSec = std::chrono::duration_cast<std::chrono::milliseconds>(sock.getDataAckTime() - sendStartTime).count() / 1000.f;
+        double rateSecs = std::chrono::duration_cast<std::chrono::milliseconds>(now - sock.getSynAckTime()).count() / 1000.f;
+
+        double rate = (((double)sock.getBytesSent() * 8) / rateSecs) / 1000.f;
+        std::cout << "Main:\tTransfer finished in " << transferLenSec << " sec" 
+                  << ", " << rate << " Kbps, checksum " << std::hex << std::setw(8) 
                   << std::setfill('0') << check <<  std::endl;
 
+        double idealRate = ((double) SenderSocket::kMaxPacketSize * 8) / sock.getEstimatedRtt();
+        std::cout << "Main:\testRtt " << sock.getEstimatedRtt() << ", ideal rate "
+                  << idealRate / 1000.f << " Kbps" << std::endl;
     } catch(SenderSocket::SocketError &e) {
         std::cerr << "Socket error " << e.getType() << ": " << e.what() << std::endl;
         return -1;
