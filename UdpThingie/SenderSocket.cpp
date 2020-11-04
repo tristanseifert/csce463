@@ -139,7 +139,7 @@ void SenderSocket::send(void* data, size_t length)
     
     /// number of times we've tried to send the packet (and failed)
     size_t attempts = 0;
-    const size_t kMaxAttempts = 5;
+    const size_t kMaxAttempts = 9999; // this should never be reached
 
     // sanity checquing
     if (!this->isConnected) {
@@ -265,7 +265,7 @@ awaitAck:;
         this->devRtt = ((1 - kRttBeta) * this->devRttLast) + 
                        (kRttBeta * fabs(sampleRtt - this->estimatedRtt));
 
-        this->rtoDelay = this->estimatedRtt + (4 * this->devRtt);
+        this->rtoDelay = this->estimatedRtt + (4 * max(this->devRtt, 0.010));
 
         // ack was valid
         this->stats.payloadBytesAcked += length;
@@ -410,7 +410,7 @@ success:;
 
     if (log) {
         std::cout << "[" << std::fixed << std::setprecision(3) << std::setw(6) << now << "] <-- "
-                  << kind << ((rxHdr->flags.ack) ? "-ACK " : " ") << rxHdr->ackSeq << " window "
+                  << kind << ((rxHdr->flags.ack) ? "-ACK " : " ") << rxHdr->ackSeq << " window $"
                   << std::hex << std::setw(8) << std::setfill('0') << rxHdr->receiveWindow << std::dec << std::setfill(' ');
     }
     if (updateRto) {
@@ -524,7 +524,6 @@ void SenderSocket::statsThreadMain()
 
     // wait on the quit event
     while (WaitForSingleObject(this->quitEvent, 2000) == WAIT_TIMEOUT) {
-        // lol
         this->statsThreadPrint(std::cout);
     }
 

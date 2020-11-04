@@ -148,9 +148,9 @@ int main(int argc, const char **argv)
         double transferLenSec = std::chrono::duration_cast<std::chrono::milliseconds>(sock.getDataAckTime() - sendStartTime).count() / 1000.f;
         double rateSecs = std::chrono::duration_cast<std::chrono::milliseconds>(now - sock.getSynAckTime()).count() / 1000.f;
 
-        double rate = (((double)sock.getBytesSent() * 8) / rateSecs) / 1000.f;
+        double rate = (((double)sock.getAckedPayloadBytes() * 8) / rateSecs) / 1000.f;
         std::cout << "Main:\tTransfer finished in " << transferLenSec << " sec" 
-                  << ", " << rate << " Kbps, checksum " << std::hex << std::setw(8) 
+                  << ", " << rate << " Kbps, checksum $" << std::hex << std::setw(8) 
                   << std::setfill('0') << check <<  std::endl;
 
         double idealRate = ((double) SenderSocket::kMaxPacketSize * 8) / sock.getEstimatedRtt();
