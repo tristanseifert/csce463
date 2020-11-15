@@ -24,13 +24,13 @@ using namespace __fucker;
 SenderSocket::SenderSocket() noexcept(false)
 {
     // create various events
-    this->quitEvent = CreateEvent(nullptr, false, false, L"StatsThreadQuit");
+    this->quitEvent = CreateEvent(nullptr, true, false, L"StatsThreadQuit");
     if (this->quitEvent == (HANDLE)ERROR_INVALID_HANDLE) {
         std::string msg = "CreateEvent(): " + GetLastError();
         throw std::runtime_error(msg);
     }
 
-    this->abortEvent = CreateEvent(nullptr, false, false, L"ConnectionAbort");
+    this->abortEvent = CreateEvent(nullptr, true, false, L"ConnectionAbort");
     if (this->abortEvent == (HANDLE)ERROR_INVALID_HANDLE) {
         std::string msg = "CreateEvent(): " + GetLastError();
         throw std::runtime_error(msg);
@@ -70,7 +70,7 @@ SenderSocket::~SenderSocket() noexcept(false)
     CloseHandle(this->statsThread);
     this->statsThread = INVALID_HANDLE_VALUE;
 
-    if (WaitForSingleObject(this->workerThread, 5000) != WAIT_OBJECT_0) {
+    if (WaitForSingleObject(this->workerThread, 500) != WAIT_OBJECT_0) {
         std::cerr << "Worker thread failed to exit gracefully; killing it" << std::endl;
         TerminateThread(this->workerThread, 0);
     }
@@ -531,7 +531,7 @@ void SenderSocket::workerThreadMain()
 
     // events to wait on
     HANDLE handles[] = {
-        this->full, this->sockEvent
+        this->full, this->sockEvent, this->quitEvent
     };
 
     // while transfer is ongoing
@@ -541,7 +541,7 @@ void SenderSocket::workerThreadMain()
             DWORD timeout = INFINITE;
 
             // wait for timeout, shit in the queue, or a packet
-            err = WaitForMultipleObjects(2, handles, false, timeout);
+            err = WaitForMultipleObjects(3, handles, false, timeout);
 
             switch (err) {
             // packet to transmit
@@ -552,6 +552,9 @@ void SenderSocket::workerThreadMain()
             case (WAIT_OBJECT_0 + 1):
                 this->workerReadAck();
                 break;
+            // want to quit
+            case (WAIT_OBJECT_0 + 2):
+                goto beach;
 
             // timed out waiting for an ack; re-transmit the packet
             case WAIT_TIMEOUT:
@@ -568,6 +571,8 @@ void SenderSocket::workerThreadMain()
         std::cerr << "WorkerThread exception: " << e.what() << std::endl;
         return;
     }
+
+beach:;
 }
 
 /**
@@ -593,6 +598,12 @@ void SenderSocket::workerDrainQueue()
     packet.numTx++;
     this->stats.totalBytesSent += (unsigned long) packet.payloadSz;
 
+    // if we've exceeded the number of retransmissions, signal error
+    if (packet.numTx > kMaxRetransmissions) {
+        std::cerr << "Exceeded retx for packet seq " << packet.sequence << std::endl; 
+        SetEvent(this->abortEvent);
+    }
+
     // increment for next packet
     this->nextToSend++;
 }
@@ -602,9 +613,10 @@ void SenderSocket::workerDrainQueue()
 */
 void SenderSocket::workerReadAck()
 {
+    double sampleRtt = 0;
     int err;
 
-    // packet to read
+    // read a packet from the socket
     static const size_t kReceiveSz = kMaxPacketSize;
     char receive[kReceiveSz] = { 0 };
     ReceiverPacketHeader* rxHdr = reinterpret_cast<ReceiverPacketHeader*>(receive);
@@ -612,7 +624,6 @@ void SenderSocket::workerReadAck()
     struct sockaddr_storage respFrom;
     socklen_t respFromLen = sizeof(struct sockaddr_storage);
 
-    // receive response
     err = recvfrom(this->sock, receive, kReceiveSz, 0, (struct sockaddr*)&respFrom, &respFromLen);
     if (err == -1) {
         throw SocketError(SocketError::kStatusRecvFailed, WSAGetLastError());
@@ -621,7 +632,7 @@ void SenderSocket::workerReadAck()
 
     // packet was an acknowledgement
     if (rxHdr->flags.ack) {
-        if (this->debug || true) {
+        if (this->debug) {
             std::cout << "\tTX: received ack for seq " << rxHdr->ackSeq << ", window "
                       << rxHdr->receiveWindow << std::endl;
         }
@@ -637,12 +648,17 @@ void SenderSocket::workerReadAck()
             this->lastReleased += newReleased;
         }
 
-        /*
-        // calculate actual round trip time
+        // update the "last ack received" time
         auto receivedAt = std::chrono::steady_clock::now();
         this->dataAckTime = receivedAt;
 
-        sampleRtt = (std::chrono::duration_cast<std::chrono::milliseconds>(receivedAt - sentAt).count() / 1000.f);
+        // figure out when this packet was transmitted
+        for (const auto& packet : this->queue) {
+            if (packet.sequence == (rxHdr->ackSeq - 1)) {
+                auto sentAt = packet.txTime;
+                sampleRtt = (std::chrono::duration_cast<std::chrono::milliseconds>(receivedAt - sentAt).count() / 1000.f);
+            }
+        }
 
         // update estimated RTT
         if (this->estimatedRttLast <= 0) {
@@ -661,10 +677,7 @@ void SenderSocket::workerReadAck()
 
         this->devRtt = ((1 - kRttBeta) * this->devRttLast) + (kRttBeta * fabs(sampleRtt - this->estimatedRtt));
 
-        this->rtoDelay = this->estimatedRtt + (4 * max(this->devRtt, 0.010));*/
-
-        // ack was valid
-        // this->stats.payloadBytesAcked += (unsigned long)length;
+        this->rtoDelay = this->estimatedRtt + (4 * max(this->devRtt, 0.010));
     }
 }
 
@@ -730,13 +743,13 @@ void SenderSocket::statsThreadPrint(std::ostream& out, bool newline)
     out << "[" << std::setw(2) << secs << "] ";
 
     // sender base and mbytes acked
-    size_t bytesAcked = this->currentSeq * kMaxPacketSize;
+    size_t bytesAcked = this->senderBase * kMaxPacketSize;
     double mbAcked = ((double)bytesAcked) / 1000.f / 1000.f;
-    out << "B " << std::setw(6) << this->currentSeq << " (" << std::setw(6) << mbAcked
+    out << "B " << std::setw(6) << this->senderBase << " (" << std::setw(6) << mbAcked
         << " MB) ";
 
     // next sequence number
-    out << "N " << std::setw(6) << (this->currentSeq + 1) << ' ';
+    out << "N " << std::setw(6) << (this->currentSeq) << ' ';
 
     // timeout/fast retransmit/effective window size
     out << "T " << std::setw(2) << this->stats.timeout << ' '
@@ -744,9 +757,9 @@ void SenderSocket::statsThreadPrint(std::ostream& out, bool newline)
         << "W " << std::setw(2) << this->stats.effectiveWindow << ' ';
 
     // goodput and RTT
-    size_t acked = this->stats.payloadBytesAcked;
-    size_t bytesDiff = acked - this->stats.bytesConsumed;
-    this->stats.bytesConsumed = (unsigned long) acked;
+    // size_t acked = this->stats.payloadBytesAcked;
+    size_t bytesDiff = bytesAcked - this->stats.bytesConsumed;
+    this->stats.bytesConsumed = (unsigned long)bytesAcked;
 
     double goodput = ((double)bytesDiff * 8) / 1000.f / 1000.f / secsSinceLastStats;
 

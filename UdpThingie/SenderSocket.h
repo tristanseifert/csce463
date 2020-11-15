@@ -237,8 +237,6 @@ private:
 
     /// Current stats to print for the stats thread
     struct {
-        /// Sender base
-        std::atomic_ulong senderBase = 0;
         /// Number of ACKed packets
         std::atomic_ulong packetsAcked = 0;
         /// Next sequence number
