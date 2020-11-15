@@ -13,6 +13,7 @@
 
 namespace __fucker {
     DWORD WINAPI StatsThreadEntry(LPVOID);
+    DWORD WINAPI WorkerThreadEntry(LPVOID);
 }
 
 /**
@@ -20,6 +21,7 @@ namespace __fucker {
 */
 class SenderSocket {
     friend DWORD WINAPI __fucker::StatsThreadEntry(LPVOID);
+    friend DWORD WINAPI __fucker::WorkerThreadEntry(LPVOID);
 
 
 public:
@@ -28,9 +30,9 @@ public:
 	/// Maximum packet size
     constexpr static const size_t kMaxPacketSize = (1500 - 28);
     /// Max number of retransmissions (for connection establishment SYN packets)
-    constexpr static const size_t kMaxRetransmissionsSYN = 3;
+    constexpr static const size_t kMaxRetransmissionsSYN = 50;
     /// Max number of retransmissions (for all other types of packets)
-    constexpr static const size_t kMaxRetransmissions = 5;
+    constexpr static const size_t kMaxRetransmissions = 50;
     /// Default retransmission timeout (in seconds)
     constexpr static const double kRetransmissionTimeout = 1.0;
     /// Weight of estimated RTT (alpha)
@@ -135,16 +137,50 @@ public:
 
 private:
     /// size of the stats thread stack, in bytes
-    constexpr static const size_t kStackSize = (1024 * 128);
+    constexpr static const size_t kStatsStackSize = (1024 * 128);
+    /// size of the worker thread stack, in bytes
+    constexpr static const size_t kWorkerStackSize = (1024 * 256);
+
+private:
+    /**
+     * @brief Tx queue entry; holds a packet awaiting transmission
+    */
+    struct pbuf {
+        /// Sequence number of the packet to be transmitted
+        size_t sequence;
+        /// Type of packet
+        enum {
+            kTypeData,
+            kTypeFin,
+            kTypeSyn
+        } type;
+
+        /// timestamp of transmission time
+        std::chrono::steady_clock::time_point txTime;
+        /// number of times the packet has been transmitted
+        size_t numTx;
+
+        /// Size of the payload data
+        size_t payloadSz;
+        /// Actual payload data for the packet
+        char payload[kMaxPacketSize];
+    };
 
 private:
     /// Socket used for communicating
     SOCKET sock = INVALID_SOCKET;
+    /// Event signalled when there is data to read from the socket
+    HANDLE sockEvent = INVALID_HANDLE_VALUE;
+
     /// Destination host
     struct sockaddr_storage host = { 0 };
     /// String version of destination host
     std::string hostStr = "";
+    /// Window size
+    size_t window = 0;
 
+    /// when set, close has been called at least once. no more data should be accepted
+    bool isClosing = false;
     /// if set, we've established a connection before
     bool isConnected = false;
     /// time at which the connection was begun to be established
@@ -177,6 +213,27 @@ private:
     HANDLE statsThread = INVALID_HANDLE_VALUE;
     /// signalled when quit is desired
     HANDLE quitEvent = INVALID_HANDLE_VALUE;
+
+    /// handle to the worker thread
+    HANDLE workerThread = INVALID_HANDLE_VALUE;
+    /// event signalled by the worker to indicate the connection has become fucked
+    HANDLE abortEvent = INVALID_HANDLE_VALUE;
+    /// the worker thread signals this every time it passes through its main loop
+    HANDLE workerLoopEvent = INVALID_HANDLE_VALUE;
+
+    /// semaphore indicating queue has empty spots
+    HANDLE empty = INVALID_HANDLE_VALUE;
+    /// semaphore indicating queue is full
+    HANDLE full = INVALID_HANDLE_VALUE;
+
+    /// packets waiting to be transmitted
+    std::vector<pbuf> queue;
+    /// Sender base value
+    size_t senderBase = 0;
+    /// Index of packet to send next
+    size_t nextToSend = 0;
+    /// Last released packet
+    size_t lastReleased = 0;
 
     /// Current stats to print for the stats thread
     struct {
@@ -224,6 +281,12 @@ private:
     void setUpStatsThread();
     void statsThreadMain();
     void statsThreadPrint(std::ostream &out, bool newline = true);
+
+private:
+    void setUpWorkerThread();
+    void workerThreadMain();
+    void workerDrainQueue();
+    void workerReadAck();
 };
 
 #endif
