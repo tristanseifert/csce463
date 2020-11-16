@@ -70,12 +70,19 @@ SenderSocket::~SenderSocket() noexcept(false)
     CloseHandle(this->statsThread);
     this->statsThread = INVALID_HANDLE_VALUE;
 
-    if (WaitForSingleObject(this->workerThread, 500) != WAIT_OBJECT_0) {
-        std::cerr << "Worker thread failed to exit gracefully; killing it" << std::endl;
-        TerminateThread(this->workerThread, 0);
+    for (size_t i = 0; i < kNumWorkers; i++) {
+        // ignore threads that were never started
+        if (this->workerThread[i] == INVALID_HANDLE_VALUE) {
+            continue;
+        }
+
+        if (WaitForSingleObject(this->workerThread[i], 500) != WAIT_OBJECT_0) {
+            std::cerr << "Worker thread failed to exit gracefully; killing it" << std::endl;
+            TerminateThread(this->workerThread[i], 0);
+        }
+        CloseHandle(this->workerThread[i]);
+        this->workerThread[i] = INVALID_HANDLE_VALUE;
     }
-    CloseHandle(this->workerThread);
-    this->workerThread = INVALID_HANDLE_VALUE;
 
     // clean up handles
     CloseHandle(this->quitEvent);
@@ -154,7 +161,13 @@ void SenderSocket::open(const std::string& host, uint16_t port, size_t window, f
     this->isConnected = true;
 
     // set up stats and worker threads
-    ResumeThread(this->workerThread);
+    for (size_t i = 0; i < kNumWorkers; i++) {
+        if (this->workerThread[i] == INVALID_HANDLE_VALUE) {
+            continue;
+        }
+        ResumeThread(this->workerThread[i]);
+    }
+
     ResumeThread(this->statsThread);
 }
 
@@ -172,7 +185,7 @@ void SenderSocket::close()
 
     // wait for the queue of pending packets to drain
     while (this->senderBase != this->currentSeq) {
-        WaitForSingleObject(this->workerLoopEvent, 25);
+        WaitForSingleObject(this->workerLoopEvent, max(100, (this->rtoDelay * 1000.f)));
     }
 
     // put the socket back into blocking mode
@@ -412,8 +425,14 @@ void SenderSocket::setUpSocket(struct sockaddr_storage *addr)
         throw SocketError(SocketError::kStatusSystemError, WSAGetLastError());
     }
 
+    // set default address to send to
+    err = connect(sock, (struct sockaddr*)addr, sizeof(struct sockaddr_in));
+    if (err != 0) {
+        throw SocketError(SocketError::kStatusSystemError, WSAGetLastError());
+    }
+
     // increase the receive/transmit buffer sizes
-    const int kRxBufSz = (32 * 1000 * 1000), kTxBufSz = (32 * 1000 * 1000);
+    const int kRxBufSz = (20 * 1000 * 1000), kTxBufSz = (20 * 1000 * 1000);
 
     err = setsockopt(sock, SOL_SOCKET, SO_RCVBUF, (const char *) &kRxBufSz, sizeof(int));
     if (err == SOCKET_ERROR) {
@@ -491,9 +510,15 @@ beach:;
  * @brief Trampoline to jump into the class main method
  * @param ctx Context passed to thread creation
 */
-DWORD WINAPI __fucker::WorkerThreadEntry(LPVOID ctx)
+DWORD WINAPI __fucker::WorkerThreadEntry(LPVOID _ctx)
 {
-    static_cast<SenderSocket*>(ctx)->workerThreadMain();
+    auto* ctx = static_cast<SenderSocket::WorkerCtx*>(_ctx);
+    
+    // enter main loop
+    ctx->sock->workerThreadMain(ctx);
+
+    // clean up
+    delete ctx;
     return 0;
 }
 
@@ -504,9 +529,13 @@ void SenderSocket::setUpWorkerThread()
 {
     using namespace __fucker;
 
-    // create suspended thread
-    this->workerThread = CreateThread(nullptr, kWorkerStackSize, WorkerThreadEntry, this, CREATE_SUSPENDED, nullptr);
-    assert(this->workerThread != INVALID_HANDLE_VALUE);
+    // create suspended threads
+    for (size_t i = 0; i < kNumWorkers; i++) {
+        WorkerCtx* ctx = new WorkerCtx(this, i);
+
+        this->workerThread[i] = CreateThread(nullptr, kWorkerStackSize, WorkerThreadEntry, ctx, CREATE_SUSPENDED, nullptr);
+        assert(this->workerThread[i] != INVALID_HANDLE_VALUE);
+    }
 }
 
 
@@ -514,52 +543,62 @@ void SenderSocket::setUpWorkerThread()
  * @brief Main loop of the worker thread; this pulls packets out of the send queue as they arrive
  * and goes to send them.
 */
-void SenderSocket::workerThreadMain()
+void SenderSocket::workerThreadMain(WorkerCtx *ctx)
 {
     int err;
 
     // set sock buf sizes
-    int kernelBuffer = 20e6; // 20 meg
+    int kernelBuffer = 32e6;
     if (setsockopt(this->sock, SOL_SOCKET, SO_RCVBUF, (const char *) &kernelBuffer, sizeof(int)) == SOCKET_ERROR) {
         std::cerr << "SO_RCVBUF set failed: " << WSAGetLastError() << std::endl;
     }
     
-    kernelBuffer = 20e6;
+    kernelBuffer = 32e6;
     if (setsockopt(this->sock, SOL_SOCKET, SO_SNDBUF, (const char *) &kernelBuffer, sizeof(int)) == SOCKET_ERROR) {
         std::cerr << "SO_SNDBUF set failed: " << WSAGetLastError() << std::endl;
     }
 
     // elevate our priority
+    // std::cout << "Worker thread " << ctx->i << " started" << std::endl;
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
 
-    // create the event handle for the socket
-    assert(this->sockEvent == INVALID_HANDLE_VALUE);
+    // thread 0 handles socket reading, so set the socket up for async IO
+    if (ctx->i == 0) {
+        assert(this->sockEvent == INVALID_HANDLE_VALUE);
+        this->sockEvent = CreateEvent(nullptr, false, false, nullptr);
+        assert(this->sockEvent != INVALID_HANDLE_VALUE);
 
-    this->sockEvent = CreateEvent(nullptr, false, false, nullptr);
-    assert(this->sockEvent != INVALID_HANDLE_VALUE);
-
-    // set up socket to use the event
-    err = WSAEventSelect(this->sock, this->sockEvent, FD_READ);
-    if (err == SOCKET_ERROR) {
-        throw SocketError(SocketError::kStatusSystemError, WSAGetLastError());
+        err = WSAEventSelect(this->sock, this->sockEvent, FD_READ);
+        if (err == SOCKET_ERROR) {
+            throw SocketError(SocketError::kStatusSystemError, WSAGetLastError());
+        }
     }
 
     // at what point in the future timeout expires
-    bool updateNextTimeout = false;
+    bool updateNextTimeout = true;
     auto nextTimeout = std::chrono::steady_clock::now() + std::chrono::microseconds((size_t)(this->rtoDelay * 1000.0 * 1000.0));
 
-    // events to wait on
+    /*
+     * Since we can have multiple worker threads, we need to coordinate which ones handle what;
+     * the transmitting can handle on multiple threads at once, however, only the first worker
+     * will read from the socket. This is accomplished by telling WaitForMultipleObjects() that
+     * we have two rather than three handles.
+     * 
+     * Likewise, all retransmissions are handled only by the first thread. All other threads
+     * simply pluck packets out of the work queue.
+     */
     HANDLE handles[] = {
-        this->full, this->sockEvent, this->quitEvent
+        this->full, this->quitEvent,
+        this->sockEvent,
     };
 
     // while transfer is ongoing
     try {
         while (this->isConnected) {
-            // calculate timeout
+            // calculate timeout (all secondary workers have infinite waits)
             DWORD timeout = INFINITE;
 
-            if (this->senderBase != this->currentSeq) {
+            if (this->senderBase != this->currentSeq && ctx->i == 0) {
                 auto now = std::chrono::steady_clock::now();
 
                 double ms = std::chrono::duration_cast<std::chrono::milliseconds>(nextTimeout - now).count();
@@ -573,7 +612,7 @@ void SenderSocket::workerThreadMain()
             }
 
             // wait for timeout, shit in the queue, or a packet
-            err = WaitForMultipleObjects(3, handles, false, timeout);
+            err = WaitForMultipleObjects((ctx->i == 0) ? 3 : 2, handles, false, timeout);
 
             switch (err) {
             // packet to transmit
@@ -581,11 +620,11 @@ void SenderSocket::workerThreadMain()
                 this->workerDrainQueue(updateNextTimeout);
                 break;
             // data available to read
-            case (WAIT_OBJECT_0 + 1):
+            case (WAIT_OBJECT_0 + 2):
                 this->workerReadAck(updateNextTimeout);
                 break;
             // want to quit
-            case (WAIT_OBJECT_0 + 2):
+            case (WAIT_OBJECT_0 + 1):
                 goto beach;
 
             // timed out waiting for an ack; re-transmit the packet
@@ -632,40 +671,39 @@ beach:;
 void SenderSocket::workerDrainQueue(bool &updateTimeouts)
 {
     // get the packet from the queue, then transmit it
-    size_t slot = this->nextToSend % this->window;
+    size_t slot = this->nextToSend++ % this->window;
     if (slot == 0) {
         updateTimeouts = true;
     }
 
     this->workerTxPacket(this->queue[slot]);
-
-    // prepare the next sending
-    this->nextToSend++;
 }
 
 /**
  * @brief Transmits the given packet.
 */
-void SenderSocket::workerTxPacket(pbuf &packet, bool incrementTxAttempts)
+void SenderSocket::workerTxPacket(pbuf &packet, bool incrementTxAttempts, bool checkTxLimit)
 {
     int err;
 
     // transmit packet
-    err = sendto(this->sock, (const char*)packet.payload, (int)packet.payloadSz, 0,
-        (struct sockaddr*)&this->host, sizeof(struct sockaddr_in));
+//    err = sendto(this->sock, (const char*)packet.payload, (int)packet.payloadSz, 0,
+//        (struct sockaddr*)&this->host, sizeof(struct sockaddr_in));
+    err = ::send(this->sock, (const char*)packet.payload, (int)packet.payloadSz, 0);
+
     if (err == -1) {
         throw SocketError(SocketError::kStatusSendFailed, WSAGetLastError());
     }
 
-    //if (incrementTxAttempts) {
+    if (incrementTxAttempts) {
         packet.numTx++;
-    //}
+    }
     packet.txTime = std::chrono::steady_clock::now();
 
     this->stats.totalBytesSent += (unsigned long)packet.payloadSz;
 
     // if we've exceeded the number of retransmissions, signal error
-    if (packet.numTx > kMaxRetransmissions && incrementTxAttempts) {
+    if (packet.numTx > kMaxRetransmissions && checkTxLimit) {
         throw std::runtime_error("Exceeded retx threshold for seq no" + std::to_string(packet.sequence));
     }
 }
@@ -714,7 +752,7 @@ void SenderSocket::workerReadAck(bool &updateTimeouts)
 
                 size_t slot = (rxHdr->ackSeq - 1) % this->window;
                 auto& packet = this->queue[slot];
-                this->workerTxPacket(packet, false);
+                this->workerTxPacket(packet, true, false);
 
                 // reset ack state
                 updateTimeouts = true;

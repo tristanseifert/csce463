@@ -167,6 +167,15 @@ private:
         char payload[kMaxPacketSize];
     };
 
+    // worker thread context
+    struct WorkerCtx {
+        WorkerCtx() = delete;
+        WorkerCtx(SenderSocket* s, size_t _i) : sock(s) , i(_i) { }
+
+        SenderSocket* sock = nullptr;
+        size_t i = 0;
+    };
+
 private:
     /// Socket used for communicating
     SOCKET sock = INVALID_SOCKET;
@@ -215,8 +224,10 @@ private:
     /// signalled when quit is desired
     HANDLE quitEvent = INVALID_HANDLE_VALUE;
 
-    /// handle to the worker thread
-    HANDLE workerThread = INVALID_HANDLE_VALUE;
+    /// number of worker threads
+    constexpr static const size_t kNumWorkers = 1;
+    /// handle to the worker threads
+    HANDLE workerThread[kNumWorkers] = { INVALID_HANDLE_VALUE };
     /// event signalled by the worker to indicate the connection has become fucked
     HANDLE abortEvent = INVALID_HANDLE_VALUE;
     /// the worker thread signals this every time it passes through its main loop
@@ -288,10 +299,10 @@ private:
 
 private:
     void setUpWorkerThread();
-    void workerThreadMain();
+    void workerThreadMain(WorkerCtx *);
 
     void workerDrainQueue(bool &);
-    void workerTxPacket(pbuf&, bool = true);
+    void workerTxPacket(pbuf&, bool = true, bool = true);
 
     void workerReadAck(bool &);
 };

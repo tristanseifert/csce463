@@ -116,6 +116,14 @@ int main(int argc, const char **argv)
               << std::chrono::duration_cast<std::chrono::milliseconds>(bufFillEnd - bufFillStart).count()
               << " ms" << std::endl;
 
+    std::cout << "Main:\tcalculating expected CRC32... ";
+    uint32_t check = cs.crc32(buf, bufSizeBytes);
+    bufFillStart = std::chrono::steady_clock::now();
+
+    std::cout << "$" << std::setw(8) << std::hex << check << "; done in " << std::dec
+              << std::chrono::duration_cast<std::chrono::milliseconds>(bufFillStart - bufFillEnd).count()
+              << " ms" << std::endl;
+
     // everything appears to be in order here
     SenderSocket sock;
     try {
@@ -141,8 +149,6 @@ int main(int argc, const char **argv)
 
         // done
         sock.close();
-
-        uint32_t check = cs.crc32(buf, bufSizeBytes);
         auto now = std::chrono::steady_clock::now();
 
         double transferLenSec = std::chrono::duration_cast<std::chrono::milliseconds>(sock.getDataAckTime() - sendStartTime).count() / 1000.f;
@@ -163,4 +169,5 @@ int main(int argc, const char **argv)
 
     // clean up
     delete[] buf;
+    return 0;
 }
