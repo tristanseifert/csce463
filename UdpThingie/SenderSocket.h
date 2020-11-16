@@ -147,21 +147,22 @@ private:
     */
     struct pbuf {
         /// Sequence number of the packet to be transmitted
-        size_t sequence;
+        size_t sequence = 0;
         /// Type of packet
         enum {
+            kTypeUnknown,
             kTypeData,
             kTypeFin,
             kTypeSyn
-        } type;
+        } type = kTypeUnknown;
 
         /// timestamp of transmission time
         std::chrono::steady_clock::time_point txTime;
         /// number of times the packet has been transmitted
-        size_t numTx;
+        size_t numTx = 0;
 
         /// Size of the payload data
-        size_t payloadSz;
+        size_t payloadSz = 0;
         /// Actual payload data for the packet
         char payload[kMaxPacketSize];
     };
@@ -220,6 +221,11 @@ private:
     HANDLE abortEvent = INVALID_HANDLE_VALUE;
     /// the worker thread signals this every time it passes through its main loop
     HANDLE workerLoopEvent = INVALID_HANDLE_VALUE;
+
+    /// sequence number of the last acknowledged packet
+    DWORD lastAckSeq = 0;
+    /// number of times an ack was received for the same packet
+    size_t lastAckCount = 0;
 
     /// semaphore indicating queue has empty spots
     HANDLE empty = INVALID_HANDLE_VALUE;
@@ -283,8 +289,11 @@ private:
 private:
     void setUpWorkerThread();
     void workerThreadMain();
-    void workerDrainQueue();
-    void workerReadAck();
+
+    void workerDrainQueue(bool &);
+    void workerTxPacket(pbuf&, bool = true);
+
+    void workerReadAck(bool &);
 };
 
 #endif

@@ -153,7 +153,7 @@ int main(int argc, const char **argv)
                   << ", " << rate << " Kbps, checksum $" << std::hex << std::setw(8) 
                   << std::setfill('0') << check <<  std::endl;
 
-        double idealRate = ((double) SenderSocket::kMaxPacketSize * 8) / sock.getEstimatedRtt();
+        double idealRate = ((double) SenderSocket::kMaxPacketSize * 8 * senderWindow) / sock.getEstimatedRtt();
         std::cout << "Main:\testRtt " << sock.getEstimatedRtt() << ", ideal rate "
                   << idealRate / 1000.f << " Kbps" << std::endl;
     } catch(SenderSocket::SocketError &e) {

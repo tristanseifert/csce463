@@ -198,6 +198,12 @@ void SenderSocket::close()
     }
 
     this->isConnected = false;
+
+    // notify threads to terminate
+    if (!SetEvent(this->quitEvent)) {
+        std::string msg = "SetEvent(): " + GetLastError();
+        throw std::runtime_error(msg);
+    }
 }
 
 /**
@@ -340,7 +346,7 @@ void SenderSocket::send(void* data, size_t length)
             throw SocketError(SocketError::kStatusNotConnected);
         // connection got fucked
         case (WAIT_OBJECT_0 + 1):
-            throw SocketError(SocketError::kStatusSendFailed);
+            throw SocketError(SocketError::kStatusSendFailed, "Connection has broken");
         // have space to send more packets
         case (WAIT_OBJECT_0 + 2):
             goto queueSpaceAvailable;
@@ -354,7 +360,7 @@ void SenderSocket::send(void* data, size_t length)
 queueSpaceAvailable:;
     // build the packet
     char buf[kMaxPacketSize];
-    memset(&buf, 0, kMaxPacketSize);
+    memset(&buf, 0, sizeof(SenderPacketHeader));
 
     size_t usedPacketLen = (sizeof(SenderPacketHeader) + length);
 
@@ -362,15 +368,12 @@ queueSpaceAvailable:;
     packet->header.flags.magic = kFlagsMagic;
     packet->header.seq = this->currentSeq;
 
-    if (this->debug) {
-        std::cout << "\tTX: seq " << this->currentSeq << std::endl;
-    }
-
     memcpy(packet->data, data, length);
 
     // write it into the tx buffer
     size_t slot = this->currentSeq % this->window;
 
+    this->queue[slot].txTime = std::chrono::steady_clock::now();
     this->queue[slot].sequence = this->currentSeq;
     this->queue[slot].type = pbuf::kTypeData;
     this->queue[slot].numTx = 0;
@@ -504,8 +507,6 @@ void SenderSocket::setUpWorkerThread()
     // create suspended thread
     this->workerThread = CreateThread(nullptr, kWorkerStackSize, WorkerThreadEntry, this, CREATE_SUSPENDED, nullptr);
     assert(this->workerThread != INVALID_HANDLE_VALUE);
-
-    SetThreadPriority(this->workerThread, THREAD_PRIORITY_TIME_CRITICAL);
 }
 
 
@@ -516,6 +517,20 @@ void SenderSocket::setUpWorkerThread()
 void SenderSocket::workerThreadMain()
 {
     int err;
+
+    // set sock buf sizes
+    int kernelBuffer = 20e6; // 20 meg
+    if (setsockopt(this->sock, SOL_SOCKET, SO_RCVBUF, (const char *) &kernelBuffer, sizeof(int)) == SOCKET_ERROR) {
+        std::cerr << "SO_RCVBUF set failed: " << WSAGetLastError() << std::endl;
+    }
+    
+    kernelBuffer = 20e6;
+    if (setsockopt(this->sock, SOL_SOCKET, SO_SNDBUF, (const char *) &kernelBuffer, sizeof(int)) == SOCKET_ERROR) {
+        std::cerr << "SO_SNDBUF set failed: " << WSAGetLastError() << std::endl;
+    }
+
+    // elevate our priority
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
 
     // create the event handle for the socket
     assert(this->sockEvent == INVALID_HANDLE_VALUE);
@@ -529,6 +544,10 @@ void SenderSocket::workerThreadMain()
         throw SocketError(SocketError::kStatusSystemError, WSAGetLastError());
     }
 
+    // at what point in the future timeout expires
+    bool updateNextTimeout = false;
+    auto nextTimeout = std::chrono::steady_clock::now() + std::chrono::microseconds((size_t)(this->rtoDelay * 1000.0 * 1000.0));
+
     // events to wait on
     HANDLE handles[] = {
         this->full, this->sockEvent, this->quitEvent
@@ -540,35 +559,67 @@ void SenderSocket::workerThreadMain()
             // calculate timeout
             DWORD timeout = INFINITE;
 
+            if (this->senderBase != this->currentSeq) {
+                auto now = std::chrono::steady_clock::now();
+
+                double ms = std::chrono::duration_cast<std::chrono::milliseconds>(nextTimeout - now).count();
+
+                if (ms > 0) {
+                    timeout = (DWORD)ms;
+                } else {
+                    // if we get a negative or zero timeout, poll
+                    timeout = 0;
+                }
+            }
+
             // wait for timeout, shit in the queue, or a packet
             err = WaitForMultipleObjects(3, handles, false, timeout);
 
             switch (err) {
             // packet to transmit
             case WAIT_OBJECT_0:
-                this->workerDrainQueue();
+                this->workerDrainQueue(updateNextTimeout);
                 break;
             // data available to read
             case (WAIT_OBJECT_0 + 1):
-                this->workerReadAck();
+                this->workerReadAck(updateNextTimeout);
                 break;
             // want to quit
             case (WAIT_OBJECT_0 + 2):
                 goto beach;
 
             // timed out waiting for an ack; re-transmit the packet
-            case WAIT_TIMEOUT:
+            case WAIT_TIMEOUT: {
+                updateNextTimeout = true;
+                this->stats.timeout++;
+
+                size_t slot = this->senderBase % this->window;
+                auto& packet = this->queue[slot];
+                this->workerTxPacket(packet);
                 break;
+            }
 
             // system errors
             default:
                 throw SocketError(SocketError::kStatusSystemError);
             }
-        }
 
-        SetEvent(this->workerLoopEvent);
+            // recompute timeout
+            if (updateNextTimeout || true) {
+                // tx time of current packet + RTO
+                size_t slot = this->senderBase % this->window;
+                auto& packet = this->queue[slot];
+
+                nextTimeout = packet.txTime + std::chrono::microseconds((size_t) (this->rtoDelay * 1000.0 * 1000.0));
+            }
+            updateNextTimeout = false;
+
+            // signal we've gone once through the loop
+            SetEvent(this->workerLoopEvent);
+        }
     } catch (const std::exception& e) {
         std::cerr << "WorkerThread exception: " << e.what() << std::endl;
+        SetEvent(this->abortEvent);
         return;
     }
 
@@ -578,40 +629,51 @@ beach:;
 /**
  * @brief Reads the packet from the top of the queue and transmits it.
 */
-void SenderSocket::workerDrainQueue()
+void SenderSocket::workerDrainQueue(bool &updateTimeouts)
+{
+    // get the packet from the queue, then transmit it
+    size_t slot = this->nextToSend % this->window;
+    if (slot == 0) {
+        updateTimeouts = true;
+    }
+
+    this->workerTxPacket(this->queue[slot]);
+
+    // prepare the next sending
+    this->nextToSend++;
+}
+
+/**
+ * @brief Transmits the given packet.
+*/
+void SenderSocket::workerTxPacket(pbuf &packet, bool incrementTxAttempts)
 {
     int err;
 
-    // pull out the packet
-    size_t slot = this->nextToSend % this->window;
-    auto& packet = this->queue[slot];
-
     // transmit packet
-    packet.txTime = std::chrono::steady_clock::now();
-
-    err = sendto(this->sock, (const char*) packet.payload, (int) packet.payloadSz, 0,
+    err = sendto(this->sock, (const char*)packet.payload, (int)packet.payloadSz, 0,
         (struct sockaddr*)&this->host, sizeof(struct sockaddr_in));
     if (err == -1) {
         throw SocketError(SocketError::kStatusSendFailed, WSAGetLastError());
     }
 
-    packet.numTx++;
-    this->stats.totalBytesSent += (unsigned long) packet.payloadSz;
+    //if (incrementTxAttempts) {
+        packet.numTx++;
+    //}
+    packet.txTime = std::chrono::steady_clock::now();
+
+    this->stats.totalBytesSent += (unsigned long)packet.payloadSz;
 
     // if we've exceeded the number of retransmissions, signal error
-    if (packet.numTx > kMaxRetransmissions) {
-        std::cerr << "Exceeded retx for packet seq " << packet.sequence << std::endl; 
-        SetEvent(this->abortEvent);
+    if (packet.numTx > kMaxRetransmissions && incrementTxAttempts) {
+        throw std::runtime_error("Exceeded retx threshold for seq no" + std::to_string(packet.sequence));
     }
-
-    // increment for next packet
-    this->nextToSend++;
 }
 
 /**
  * @brief Reads pending data from the socket.
 */
-void SenderSocket::workerReadAck()
+void SenderSocket::workerReadAck(bool &updateTimeouts)
 {
     double sampleRtt = 0;
     int err;
@@ -632,52 +694,81 @@ void SenderSocket::workerReadAck()
 
     // packet was an acknowledgement
     if (rxHdr->flags.ack) {
+        // time the packet was received
+        auto receivedAt = std::chrono::steady_clock::now();
+
         if (this->debug) {
             std::cout << "\tTX: received ack for seq " << rxHdr->ackSeq << ", window "
                       << rxHdr->receiveWindow << std::endl;
         }
 
-        // move sender base if the ack is beyond what we've sent
-        if (rxHdr->ackSeq > this->senderBase) {
-            this->senderBase = rxHdr->ackSeq;
-            size_t effectiveWin = min(this->window, rxHdr->receiveWindow);
+        // check for receiving multiple acks for the same packet
+        if (this->lastAckSeq != rxHdr->ackSeq) {
+            // ack for a different sequence than previous
+            this->lastAckSeq = rxHdr->ackSeq;
+            this->lastAckCount = 1;
+        } else {
+            // if three acks received, retransmit this packet
+            if (++this->lastAckCount == 3) {
+                this->stats.fastReTx++;
 
-            // advance semaphore to allow more sending
-            size_t newReleased = this->senderBase + effectiveWin - this->lastReleased;
-            ReleaseSemaphore(this->empty, (LONG) newReleased, nullptr);
-            this->lastReleased += newReleased;
-        }
+                size_t slot = (rxHdr->ackSeq - 1) % this->window;
+                auto& packet = this->queue[slot];
+                this->workerTxPacket(packet, false);
 
-        // update the "last ack received" time
-        auto receivedAt = std::chrono::steady_clock::now();
-        this->dataAckTime = receivedAt;
-
-        // figure out when this packet was transmitted
-        for (const auto& packet : this->queue) {
-            if (packet.sequence == (rxHdr->ackSeq - 1)) {
-                auto sentAt = packet.txTime;
-                sampleRtt = (std::chrono::duration_cast<std::chrono::milliseconds>(receivedAt - sentAt).count() / 1000.f);
+                // reset ack state
+                updateTimeouts = true;
             }
         }
 
-        // update estimated RTT
-        if (this->estimatedRttLast <= 0) {
-            this->estimatedRttLast = sampleRtt;
-        } else {
-            this->estimatedRttLast = this->estimatedRtt;
+        // move sender base if the ack is beyond what we've sent
+        if (rxHdr->ackSeq > this->senderBase) {
+            this->senderBase = rxHdr->ackSeq;
+            updateTimeouts = true;
+
+            // advance semaphore to allow more sending
+            size_t effectiveWin = min(this->window, rxHdr->receiveWindow);
+            this->stats.effectiveWindow = effectiveWin;
+
+            size_t newReleased = this->senderBase + effectiveWin - this->lastReleased;
+            ReleaseSemaphore(this->empty, (LONG)newReleased, nullptr);
+            this->lastReleased += newReleased;
+
+            // update the "last ack received" time
+            this->dataAckTime = receivedAt;
+
+            // figure out when this packet was transmitted
+            size_t slot = (rxHdr->ackSeq - 1) % this->window;
+            auto& packet = this->queue[slot];
+            size_t baseSlot = this->senderBase % this->window;
+            auto& basePacket = this->queue[baseSlot];
+
+            if (packet.numTx > 1 || basePacket.numTx > 1) {
+                return;
+            }
+
+            auto sentAt = packet.txTime;
+            sampleRtt = max(std::chrono::duration_cast<std::chrono::milliseconds>(receivedAt - sentAt).count() / 1000.f, 0.01);
+
+            // update estimated RTT
+            if (this->estimatedRttLast <= 0) {
+                this->estimatedRttLast = sampleRtt;
+            } else {
+                this->estimatedRttLast = this->estimatedRtt;
+            }
+            this->estimatedRtt = ((1.f - kRttAlpha) * this->estimatedRttLast) + (kRttAlpha * sampleRtt);
+            //std::cout << "eRTT: " << this->estimatedRtt << "; last " << this->estimatedRttLast << ", sample " << sampleRtt << std::endl;
+
+            // update RTT deviation
+            if (this->devRttLast <= 0) {
+                this->devRttLast = 0;
+            } else {
+                this->devRttLast = this->devRtt;
+            }
+
+            this->devRtt = ((1 - kRttBeta) * this->devRttLast) + (kRttBeta * fabs(sampleRtt - this->estimatedRtt));
+            this->rtoDelay = min(this->estimatedRtt + (4 * max(this->devRtt, 0.010)), 2);
         }
-        this->estimatedRtt = ((1.f - kRttAlpha) * this->estimatedRttLast) + (kRttAlpha * sampleRtt);
-
-        // update RTT deviation
-        if (this->devRttLast <= 0) {
-            this->devRttLast = 0;
-        } else {
-            this->devRttLast = this->devRtt;
-        }
-
-        this->devRtt = ((1 - kRttBeta) * this->devRttLast) + (kRttBeta * fabs(sampleRtt - this->estimatedRtt));
-
-        this->rtoDelay = this->estimatedRtt + (4 * max(this->devRtt, 0.010));
     }
 }
 
@@ -702,8 +793,6 @@ void SenderSocket::setUpStatsThread()
     // set up thread
     this->statsThread = CreateThread(nullptr, kStatsStackSize, StatsThreadEntry, this, CREATE_SUSPENDED, nullptr);
     assert(this->statsThread != INVALID_HANDLE_VALUE);
-
-    SetThreadPriority(this->statsThread, THREAD_PRIORITY_ABOVE_NORMAL);
 }
 
 /**
@@ -713,6 +802,7 @@ void SenderSocket::statsThreadMain()
 {
     // prepare stats structures
     this->stats.lastPrint = std::chrono::steady_clock::now();
+    // this->statsThreadPrint(std::cout);
 
     // wait on the quit event
     while (WaitForSingleObject(this->quitEvent, 2000) == WAIT_TIMEOUT) {
@@ -745,16 +835,16 @@ void SenderSocket::statsThreadPrint(std::ostream& out, bool newline)
     // sender base and mbytes acked
     size_t bytesAcked = this->senderBase * kMaxPacketSize;
     double mbAcked = ((double)bytesAcked) / 1000.f / 1000.f;
-    out << "B " << std::setw(6) << this->senderBase << " (" << std::setw(6) << mbAcked
+    out << "B " << std::setw(7) << this->senderBase << " (" << std::setw(7) << std::setprecision(1) << mbAcked
         << " MB) ";
 
     // next sequence number
-    out << "N " << std::setw(6) << (this->currentSeq) << ' ';
+    out << "N " << std::setw(7) << (this->currentSeq) << ' ';
 
     // timeout/fast retransmit/effective window size
-    out << "T " << std::setw(2) << this->stats.timeout << ' '
-        << "F " << std::setw(2) << this->stats.fastReTx << ' '
-        << "W " << std::setw(2) << this->stats.effectiveWindow << ' ';
+    out << "T " << std::setw(5) << max(((long)this->stats.timeout) - 1, 0) << ' '
+        << "F " << std::setw(5) << max(((long)this->stats.fastReTx) - 1, 0) << ' '
+        << "W " << std::setw(7) << this->stats.effectiveWindow << ' ';
 
     // goodput and RTT
     // size_t acked = this->stats.payloadBytesAcked;
@@ -763,8 +853,12 @@ void SenderSocket::statsThreadPrint(std::ostream& out, bool newline)
 
     double goodput = ((double)bytesDiff * 8) / 1000.f / 1000.f / secsSinceLastStats;
 
-    out << "S " << std::setw(6) << goodput << " Mbps "
-        << " RTT " << std::setw(5) << std::fixed << std::setprecision(3) << this->estimatedRtt;
+    if (isnan(goodput)) {
+        goodput = 0;
+    }
+
+    out << "S " << std::setw(7) << std::setprecision(3) << goodput << " Mbps "
+        << " RTT " << std::setw(6) << std::fixed << std::setprecision(4) << this->estimatedRtt;
 
     // lastly, newline if requested
     if (newline) {
