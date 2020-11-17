@@ -1,0 +1,179 @@
+\documentclass[11pt]{article}
+
+\usepackage[letterpaper, margin=0.74in]{geometry}
+\usepackage{lscape}
+
+\usepackage{graphicx}
+\usepackage{enumitem}
+\usepackage{color,soul}
+\usepackage{amsmath}
+\usepackage{xfrac}
+\usepackage{mathtools}
+
+\usepackage{xcolor}
+\definecolor{aggiemaroon}{RGB}{80,0,0}
+
+\usepackage{listings}
+\usepackage{caption}
+\DeclareCaptionFont{white}{\color{white}}
+\DeclareCaptionFormat{listing}{%
+  \parbox{\textwidth}{\colorbox{gray}{\parbox{\textwidth}{#1#2#3}}\vskip-4pt}}
+\captionsetup[lstlisting]{format=listing,labelfont=white,textfont=white}
+\lstset{frame=lrb,xleftmargin=\fboxsep,xrightmargin=-\fboxsep,basicstyle=\tiny\tt}
+
+\usepackage[mathletters,postscript]{ucs}
+\usepackage[utf8x]{inputenc}
+\usepackage{pmboxdraw}
+
+\usepackage{hyperref}
+\hypersetup{
+    colorlinks,
+    linkcolor=aggiemaroon,
+    linkbordercolor=blue,
+}
+\makeatletter
+\Hy@AtBeginDocument{%
+  \def\@pdfborder{0 0 1}% Overrides border definition set with colorlinks=true
+  \def\@pdfborderstyle{/S/U/W 1}% Overrides border style set with colorlinks=true
+                                % Hyperlink border style will be underline of width 1pt
+}
+\makeatother
+
+\usepackage{tikz}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.16}
+\usepackage{tikz}
+\usepackage{float}
+
+
+
+\usepackage{graphicx}
+\graphicspath{{images/}}
+
+\begin{document}
+%\newcommand{\answer}[1]{{\bf (Answer: #1)}}
+\newcommand{\answer}[1]{\mbox{~}}
+
+{
+\large  CSCE 463 \hfill Fall 2020\\
+\vspace{-1.15cm}
+ \begin{center}
+   \textbf{Homework 3 Report} \\
+   Tristan Seifert \\
+    \end{center}
+}
+
+%%%%%%%%
+\section{Questions}
+
+\begin{enumerate}
+
+%%% (1)
+\item {
+The best-fit function over the measured data is $r(w) = 0.02313 \times w^{1.002}$.
+
+\begin{figure}[H]
+   \centering
+\begin{tikzpicture}
+\begin{axis}[
+	xmode=log,
+	axis line style=->,
+	legend pos=north west,
+	ylabel={Rate (Mbps)},
+	xlabel={Window Size (packets)}
+]
+	\addplot[draw=aggiemaroon,mark=x,style={ultra thick}] table [x=W, y=r, col sep=comma] {data/window-rate.csv};
+	\addplot[draw=blue,samples=250,domain=1:1024] {0.02313 * x^(1.002)};
+
+	
+	\legend{Measured $r(W)$, Best-fit $r(W)$}
+\end{axis}
+\end{tikzpicture}
+
+   \caption{Window size vs. throughput}
+   \label{fig:rate-window}
+\end{figure}
+
+The measured data and resultant curve make sense and match theory discussed in class. Since the window essentially sets an upper bound on the number of packets that are "outstanding" at any given time, it follows that as window size is increased, the amount of utilization of the link is increased, as the round-trip time remains constant.
+
+Peak utilization (and thus, the highest bandwidth) is attained when the window size is roughly the same as the RTT. This means that there's enough packets outstanding so that when we finish sending the last of the window, we'll be receiving the acknowledgements for the sender base.
+}
+
+%%% (2)
+\item {
+The best-fit function for the measured data is $r(t) = 286.9 \times t^{-0.9495}$.
+
+\begin{figure}[H]
+   \centering
+\begin{tikzpicture}
+\begin{axis}[
+	xmode=log,
+	axis line style=->,
+	legend pos=north east,
+	xlabel={Round-trip time (ms)},
+	ylabel={Rate (Mbps)}
+]
+	\addplot[draw=aggiemaroon,mark=x,style={ultra thick}] table [x=RTT, y=r, col sep=comma] {data/rtt-rate.csv};
+	\addplot[draw=blue,samples=250,domain=10:1024] {286.9 * x^(-0.9495)};
+
+	
+	\legend{Measured $r(RTT)$, Best-fit $r(RTT)$}
+\end{axis}
+\end{tikzpicture}
+
+   \caption{RTT vs. throughput}
+   \label{fig:rate-window}
+\end{figure}
+
+In this case, the window size is fixed at $W = 30$. As described in (1), the window size should be set such that at any given time, the number of packets outstanding is roughly equal to the RTT. As RTT increases, the rate supported by the protocol drops off rather dramatically. This is because once $W$ packets are sent, we must wait for an acknowledgement to move the sender base forward.
+}
+
+%%% (3)
+\item {
+With traditional 1,472 byte packets, a maximum speed of about 1100 Mbps was attained. When raising the packet size to 8,972 bytes, speeds of around 40Gbps were reached.
+
+The program ran on a Windows 10 virtual machine with 48 GB RAM, 24 vCPU cores, which was in turn running on a Mac Pro (2019) with 352 GB of DDR4-2933 ECC memory, and a 24-core (48 logical threads) Xeon W-3265M CPU. It was critical to reboot the virtual machine between trials to produce the highest speeds; after a few runs, speeds as low as ~450Mbps for the same exact binary and configuration will happen. This seems to be primarily due to fragmentation of physical memory, which results in more hypervisor traps that in turn significantly reduce the performance of the VM. 
+
+Since I don't use Windows for anything else, and don't have the time or disk space to install it bare metal on this machine, I can't fully test this hypothesis.
+
+In addition to the limitations imposed by running in a virtual machine, some profiling revealed that most of the time was spent in the kernel to actually send packets. An API to allow sending multiple packets at once, or performing more buffering in userspace and batching kernel calls across multiple threads could possibly improve performance.
+
+\begin{lstlisting}[label=app-trace,caption={Dummy trace for $W=8000$ and 1,472 byte packets}]
+Main:   sender W = 8000, RTT 0.001 sec, loss 0 / 0, link 10000 MbpsMain:   initializing DWORD array with 2^30 elements... done in 841 msMain:   calculating expected CRC32... $39f2a0e6; done in 7761 ms[ 0.001] <-- SYN-ACK 0 window $00013880; setting initial RTO to 0.003Main:   Connected to localhost in 0.011 sec. Packet size is 1472 bytes[ 2] B  172415 (  253.8 MB) N  180515 T     0 F     0 W    8000 S  1011.031 Mbps  RTT 0.0870[ 4] B  355916 (  523.9 MB) N  364014 T     0 F     0 W    8000 S  1072.929 Mbps  RTT 0.0870[ 6] B  528174 (  777.5 MB) N  536258 T     0 F     0 W    8000 S  1008.200 Mbps  RTT 0.0888[ 8] B  704462 ( 1037.0 MB) N  712566 T     0 F     0 W    8000 S  1030.763 Mbps  RTT 0.1050[10] B  883773 ( 1300.9 MB) N  891860 T     0 F     0 W    8000 S  1050.029 Mbps  RTT 0.0870[12] B 1065323 ( 1568.1 MB) N 1073414 T     0 F     0 W    8000 S  1063.637 Mbps  RTT 0.0850[14] B 1248672 ( 1838.0 MB) N 1256753 T     0 F     0 W    8000 S  1072.619 Mbps  RTT 0.0890[16] B 1426418 ( 2099.7 MB) N 1434529 T     0 F     0 W    8000 S  1038.242 Mbps  RTT 0.0890[18] B 1604199 ( 2361.4 MB) N 1612372 T     0 F     0 W    8000 S  1041.012 Mbps  RTT 0.0850[20] B 1787446 ( 2631.1 MB) N 1795545 T     0 F     0 W    8000 S  1069.358 Mbps  RTT 0.0880[22] B 1970026 ( 2899.9 MB) N 1978124 T     0 F     0 W    8000 S  1071.288 Mbps  RTT 0.0860[24] B 2150343 ( 3165.3 MB) N 2158437 T     0 F     0 W    8000 S  1058.003 Mbps  RTT 0.0880[26] B 2326082 ( 3424.0 MB) N 2334173 T     0 F     0 W    8000 S  1032.181 Mbps  RTT 0.0910[28] B 2504957 ( 3687.3 MB) N 2513086 T     0 F     0 W    8000 S  1045.929 Mbps  RTT 0.0949[30] B 2686238 ( 3954.1 MB) N 2694320 T     0 F     0 W    8000 S  1060.956 Mbps  RTT 0.0870[32] B 2867486 ( 4220.9 MB) N 2875578 T     0 F     0 W    8000 S  1061.397 Mbps  RTT 0.0890[32.866] <-- FIN-ACK 2933721 window $00000000Main:   Transfer finished in 32.862 sec, 1095713.021 Kbps, checksum $39f2a0e6Main:   estRtt 0.047, ideal rate 2004394.100 Kbps
+\end{lstlisting}
+
+\begin{lstlisting}[label=app-trace,caption={Dummy trace for $W=8000$ and 8,972 byte packets}]
+Main:   sender W = 8000, RTT 0.001 sec, loss 0 / 0, link 10000 MbpsMain:   initializing DWORD array with 2^32 elements... done in 3408 msMain:   calculating expected CRC32... $60895513; done in 31284 ms[ 0.001] <-- SYN-ACK 0 window $00013880; setting initial RTO to 0.003Main:   Connected to localhost in 0.019 sec. Packet size is 8972 bytes[ 2] B  147964 ( 1327.5 MB) N  156036 T     0 F     0 W    8000 S  5271.035 Mbps  RTT 0.1030[ 4] B  306499 ( 2749.9 MB) N  314568 T     0 F     0 W    8000 S  5653.155 Mbps  RTT 0.1000[ 6] B  464781 ( 4170.0 MB) N  472857 T     0 F     0 W    8000 S  5635.111 Mbps  RTT 0.0990[ 8] B  624506 ( 5603.1 MB) N  632589 T     0 F     0 W    8000 S  5698.338 Mbps  RTT 0.1000[10] B  786254 ( 7054.2 MB) N  794328 T     0 F     0 W    8000 S 22835.925 Mbps  RTT 0.0970[12] B  948868 ( 8513.2 MB) N  956947 T     0 F     0 W    8000 S 22856.109 Mbps  RTT 0.0980[14] B 1110687 ( 9965.0 MB) N 1118762 T     0 F     0 W    8000 S 22837.939 Mbps  RTT 0.0980[16] B 1272862 (11420.1 MB) N 1280952 T     0 F     0 W    8000 S 39861.490 Mbps  RTT 0.0990[18] B 1431455 (12843.0 MB) N 1439525 T     0 F     0 W    8000 S 39733.015 Mbps  RTT 0.0990[20] B 1593645 (14298.1 MB) N 1601717 T     0 F     0 W    8000 S 39900.058 Mbps  RTT 0.0970[22] B 1756474 (15759.0 MB) N 1764545 T     0 F     0 W    8000 S 46987.001 Mbps  RTT 0.0990[24.099] <-- FIN-ACK 1916541 window $00000000Main:   Transfer finished in 24.096 sec, 50190174.004 Kbps, checksum $60895513Main:   estRtt 0.067, ideal rate 81570268.436 Kbps
+\end{lstlisting}
+}
+
+%%% (4)
+\item {
+When compared to running the same test with no loss in the reverse direction, there was little difference. This is primarily attributable to the fact that reverse direction loss only affects acknowledgements sent by the server, not the actual data packets. 
+
+Because the algorithm implements cumulative ACKs, we'll often receive an ACK for later packets before the timeouts for previous packets expires. This effectively hides this packet loss from the sender; retransmissions are significantly lower than they would be with the same packet loss in the sending direction.
+
+\begin{lstlisting}[label=app-trace,caption={Trace for $W=300, RTT = 200\text{ms}, S=10\text{Mbps}, p_{\text{reverse}}=0.1$ and 1,472 byte packets}]
+Main:   sender W = 300, RTT 0.2 sec, loss 0 / 0.1, link 10 MbpsMain:   initializing DWORD array with 2^23 elements... done in 7 msMain:   calculating expected CRC32... $d70096ab; done in 71 ms[ 0.202] <-- SYN-ACK 0 window $00000001; setting initial RTO to 0.606Main:   Connected to localhost in 0.225 sec. Packet size is 1472 bytes[ 2] B     256 (    0.4 MB) N     512 T     0 F     0 W     256 S    1.503 Mbps  RTT 0.2717[ 4] B    1949 (    2.9 MB) N    2250 T     0 F     0 W     300 S    9.922 Mbps  RTT 0.3527[ 6] B    3652 (    5.4 MB) N    3952 T     2 F     0 W     300 S    9.982 Mbps  RTT 0.3530[ 8] B    5363 (    7.9 MB) N    5664 T     2 F     0 W     300 S    9.993 Mbps  RTT 0.3523[10] B    7075 (   10.4 MB) N    7376 T     2 F     0 W     300 S    9.998 Mbps  RTT 0.3523[12] B    8779 (   12.9 MB) N    9080 T     2 F     0 W     300 S    9.997 Mbps  RTT 0.3524[14] B   10490 (   15.4 MB) N   10791 T     2 F     0 W     300 S    9.997 Mbps  RTT 0.3523[16] B   12204 (   18.0 MB) N   12507 T     2 F     0 W     300 S    9.989 Mbps  RTT 0.3527[18] B   13914 (   20.5 MB) N   14216 T     2 F     0 W     300 S    9.993 Mbps  RTT 0.3520[20] B   15620 (   23.0 MB) N   15920 T     2 F     0 W     300 S   10.000 Mbps  RTT 0.3523[22] B   17331 (   25.5 MB) N   17631 T     2 F     0 W     300 S    9.997 Mbps  RTT 0.3525[24] B   19039 (   28.0 MB) N   19340 T     2 F     0 W     300 S    9.986 Mbps  RTT 0.3352[26] B   20755 (   30.6 MB) N   21056 T     2 F     0 W     300 S    9.996 Mbps  RTT 0.3519[28] B   22457 (   33.1 MB) N   22757 T     2 F     0 W     300 S    9.999 Mbps  RTT 0.3525[29.513] <-- FIN-ACK 22920 window $d70096abMain:   Transfer finished in 28.707 sec, 9209.444 Kbps, checksum $d70096abMain:   estRtt 0.353, ideal rate 10001.752 Kbps
+\end{lstlisting}
+}
+
+%%% (5)
+\item {
+For each received packet, the receiver increases the window size by one. This is similar to the TCP AIMD (additive increase, multiplicative decrease) algorithm.
+The upper bound on the window size of the receiver is $W = 80000$.
+}
+
+\end{enumerate}
+
+%%%%%%%%%%
+\section{Extra Credit}
+Refer to the trace below for the extra credit attempt trace. The regular \texttt{hw3-receiver-1.4.exe} binary was used, instead of the dummy test. Regular 1,472 byte packets were used.
+
+\begin{lstlisting}[label=app-trace,caption={Trace for $W=3000$ and 1,472 byte packets}]
+Main:   sender W = 3000, RTT 0.01 sec, loss 0 / 0, link 10000 MbpsMain:   initializing DWORD array with 2^30 elements... done in 950 msMain:   calculating expected CRC32... $39f2a0e6; done in 8747 ms[ 0.011] <-- SYN-ACK 0 window $00000001; setting initial RTO to 0.032Main:   Connected to localhost in 0.032 sec. Packet size is 1472 bytes[ 2] B  177485 (  253.8 MB) N  180485 T     0 F     0 W    3000 S   911.841 Mbps  RTT 0.0870[ 4] B  361103 (  523.9 MB) N  364103 T     0 F     0 W    3000 S   972.279 Mbps  RTT 0.0870[ 6] B  533108 (  777.5 MB) N  536108 T     0 F     0 W    3000 S   908.790 Mbps  RTT 0.0888[ 8] B  709436 ( 1037.0 MB) N  712436 T     0 F     0 W    3000 S   930.843 Mbps  RTT 0.1050[10] B  888719 ( 1300.9 MB) N  891719 T     0 F     0 W    3000 S   950.849 Mbps  RTT 0.0870[12] B 1069909 ( 1568.1 MB) N 1072909 T     0 F     0 W    3000 S   963.937 Mbps  RTT 0.0850[14] B 1253683 ( 1838.0 MB) N 1256683 T     0 F     0 W    3000 S   972.673 Mbps  RTT 0.0890[16] B 1431509 ( 2099.7 MB) N 1434509 T     0 F     0 W    3000 S  1038.092 Mbps  RTT 0.0890[18] B 1609382 ( 2361.4 MB) N 1612382 T     0 F     0 W    3000 S  1041.312 Mbps  RTT 0.0850[20] B 1792500 ( 2631.1 MB) N 1795500 T     0 F     0 W    3000 S  1069.338 Mbps  RTT 0.0880[22] B 1974930 ( 2899.9 MB) N 1977930 T     0 F     0 W    3000 S   971.218 Mbps  RTT 0.0860[24] B 2155209 ( 3165.3 MB) N 2158209 T     0 F     0 W    3000 S   958.243 Mbps  RTT 0.0880[26] B 2330970 ( 3424.0 MB) N 2333970 T     0 F     0 W    3000 S  1007.781 Mbps  RTT 0.0910[28] B 2510106 ( 3687.3 MB) N 2513106 T     0 F     0 W    3000 S  1035.739 Mbps  RTT 0.0949[30] B 2691313 ( 3954.1 MB) N 2694313 T     0 F     0 W    3000 S   960.236 Mbps  RTT 0.0870[32] B 2872553 ( 4220.9 MB) N 2875553 T     0 F     0 W    3000 S  1007.497 Mbps  RTT 0.0890[32.793] <-- FIN-ACK 2933721 window $39f2a0e6
+Main:   Transfer finished in 32.279 sec, 961079.65 Kbps, checksum $39f2a0e6Main:   estRtt 0.016, ideal rate 1295289.08 Kbps
+\end{lstlisting}
+
+\end{document}
+

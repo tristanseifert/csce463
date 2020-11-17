@@ -29,6 +29,7 @@ public:
     constexpr static const uint16_t kPortNumber = 22345;
 	/// Maximum packet size
     constexpr static const size_t kMaxPacketSize = (1500 - 28);
+    // constexpr static const size_t kMaxPacketSize = (9000 - 28);
     /// Max number of retransmissions (for connection establishment SYN packets)
     constexpr static const size_t kMaxRetransmissionsSYN = 50;
     /// Max number of retransmissions (for all other types of packets)

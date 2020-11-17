@@ -766,6 +766,11 @@ void SenderSocket::workerReadAck(bool &updateTimeouts)
 
             // advance semaphore to allow more sending
             size_t effectiveWin = min(this->window, rxHdr->receiveWindow);
+
+            /*if (this->stats.effectiveWindow != effectiveWin) {
+                std::cout << "Win: " << effectiveWin << " seq " << this->currentSeq << std::endl;
+            }*/
+
             this->stats.effectiveWindow = effectiveWin;
 
             size_t newReleased = this->senderBase + effectiveWin - this->lastReleased;

@@ -1,0 +1,8 @@
+# LaTeX temp files
+Report.aux
+Report.log
+Report.out
+Report.synctex.gz
+
+# ignore PDF output
+Report.pdf
